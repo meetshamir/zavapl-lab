@@ -1,0 +1,12 @@
+{
+  "name": "grid-status-api",
+  "version": "1.0.0",
+  "description": "PPL ZeroOps Lab — Grid status API simulating internal grid management",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

@@ -1,0 +1,25 @@
+# Break Scenario: meter-api OOM
+# Sets SIMULATE_OOM=true causing memory leak
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meter-api
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: meter-api }
+  template:
+    metadata:
+      labels: { app: meter-api }
+    spec:
+      containers:
+        - name: meter-api
+          image: "${ACR_NAME}.azurecr.io/meter-api:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          env:
+            - name: SIMULATE_OOM
+              value: "true"

@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────
+# Scheduled Task: PowerGrid Health Check
+# ─────────────────────────────────────────────────────────────
+# Runs every 30 minutes to check the health of all PowerGrid
+# services and compile a status report.
+# ─────────────────────────────────────────────────────────────
+
+name: powergrid-health-check
+description: Periodic health check across all PowerGrid services
+enabled: true
+
+# Agent to invoke for each execution
+agent: utility-ops-agent
+
+# Schedule — cron expression (every 30 minutes)
+schedule: "*/30 * * * *"
+timezone: "America/New_York"
+
+# Instructions for each scheduled run
+instructions: |
+  Run a full health check across all PowerGrid services:
+  1. Probe each service health endpoint and record response time
+  2. Check Azure Monitor for any active alerts
+  3. Review error rates and latency trends in App Insights
+  4. Compile the Grid Status Report
+  5. If any service is unhealthy, trigger the incident-handler for investigation
+
+# Guard rails
+timeout: 300                     # Max execution time in seconds (5 min)
+concurrency: no-overlap          # Skip run if previous execution is still active

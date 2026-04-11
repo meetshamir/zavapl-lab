@@ -1,0 +1,25 @@
+# Break Scenario: grid-status-api Performance Regression
+# Sets SIMULATE_DELAY_MS=5000 adding 5s latency to all endpoints
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grid-status-api
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grid-status-api }
+  template:
+    metadata:
+      labels: { app: grid-status-api }
+    spec:
+      containers:
+        - name: grid-status-api
+          image: "${ACR_NAME}.azurecr.io/grid-status-api:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+          env:
+            - name: SIMULATE_DELAY_MS
+              value: "5000"

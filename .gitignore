@@ -1,0 +1,56 @@
+# Azure
+.azure/
+*.env
+.env.*
+*.local
+*.secret
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+node_modules/
+bin/
+obj/
+dist/
+__pycache__/
+*.pyc
+
+# Terraform (if used alongside)
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# Bicep compiled output
+*.json.bak
+
+# Container
+*.tar.gz
+
+# Logs
+*.log
+
+# Credentials (never commit)
+**/appsettings.Development.json
+**/local.settings.json
+kubeconfig
+deploy-creds.txt
+publish-profile*.xml
+
+# Python
+*.egg-info/
+.eggs/
+venv/
+.venv/
+
+# .NET
+*.user
+*.suo

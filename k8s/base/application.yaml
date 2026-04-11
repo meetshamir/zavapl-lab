@@ -1,0 +1,163 @@
+# PowerGrid Application — Healthy Baseline (AKS)
+# All 5 services deployed in healthy state
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portal-web
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: portal-web }
+  template:
+    metadata:
+      labels: { app: portal-web }
+    spec:
+      containers:
+        - name: portal-web
+          image: "${ACR_NAME}.azurecr.io/portal-web:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+          env:
+            - name: VITE_OUTAGE_API_URL
+              value: "http://outage-api.powergrid.svc.cluster.local:8080"
+            - name: VITE_METER_API_URL
+              value: "http://meter-api.powergrid.svc.cluster.local:8080"
+            - name: VITE_GRID_API_URL
+              value: "http://grid-status-api.powergrid.svc.cluster.local:8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portal-web
+  namespace: powergrid
+spec:
+  type: LoadBalancer
+  selector: { app: portal-web }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outage-api
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: outage-api }
+  template:
+    metadata:
+      labels: { app: outage-api }
+    spec:
+      containers:
+        - name: outage-api
+          image: "${ACR_NAME}.azurecr.io/outage-api:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outage-api
+  namespace: powergrid
+spec:
+  selector: { app: outage-api }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meter-api
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: meter-api }
+  template:
+    metadata:
+      labels: { app: meter-api }
+    spec:
+      containers:
+        - name: meter-api
+          image: "${ACR_NAME}.azurecr.io/meter-api:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meter-api
+  namespace: powergrid
+spec:
+  selector: { app: meter-api }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grid-status-api
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grid-status-api }
+  template:
+    metadata:
+      labels: { app: grid-status-api }
+    spec:
+      containers:
+        - name: grid-status-api
+          image: "${ACR_NAME}.azurecr.io/grid-status-api:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "250m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grid-status-api
+  namespace: powergrid
+spec:
+  selector: { app: grid-status-api }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-svc
+  namespace: powergrid
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notification-svc }
+  template:
+    metadata:
+      labels: { app: notification-svc }
+    spec:
+      containers:
+        - name: notification-svc
+          image: "${ACR_NAME}.azurecr.io/notification-svc:latest"
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: "100m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+          env:
+            - name: REQUIRED_CONFIG
+              value: "enabled"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-svc
+  namespace: powergrid
+spec:
+  selector: { app: notification-svc }
+  ports: [{ port: 8080, targetPort: 8080 }]

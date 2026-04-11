@@ -1,0 +1,28 @@
+name: ppl-zeroops-lab
+metadata:
+  template: ppl-zeroops-lab@0.0.1
+services:
+  outage-api:
+    project: ./src/outage-api
+    host: containerapp
+    language: python
+  meter-api:
+    project: ./src/meter-api
+    host: containerapp
+    language: dotnet
+  grid-status-api:
+    project: ./src/grid-status-api
+    host: containerapp
+    language: js
+  notification-svc:
+    project: ./src/notification-svc
+    host: containerapp
+    language: go
+  portal-web:
+    project: ./src/portal-web
+    host: containerapp
+    language: js
+hooks:
+  postprovision:
+    shell: sh
+    run: bash scripts/post-provision.sh

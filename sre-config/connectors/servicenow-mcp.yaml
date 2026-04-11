@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────
+# ServiceNow MCP Connector — Template
+# ─────────────────────────────────────────────────────────────
+# Connects SRE Agent to a ServiceNow instance for incident
+# management (create, update, resolve incidents).
+#
+# Setup:
+#   1. Create a ServiceNow Developer Instance at https://developer.servicenow.com
+#   2. Enable the Incident table API (enabled by default)
+#   3. Create a service account or use admin credentials for the dev instance
+#   4. Replace the placeholder values below with your instance details
+#   5. Add this connector in the SRE Agent portal under Builder → Connectors
+#
+# Docs: https://sre.azure.com/docs/connectors/servicenow
+# ─────────────────────────────────────────────────────────────
+
+name: servicenow
+description: ServiceNow incident management connector for PowerGrid
+
+# Transport type — stdio runs the MCP server as a local process
+transport: stdio
+
+# Command to launch the ServiceNow MCP server
+command: npx
+args:
+  - -y
+  - "@anthropic/mcp-servicenow"
+
+# Environment variables passed to the MCP server process
+env:
+  # Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)
+  SERVICENOW_INSTANCE_URL: "https://<YOUR_INSTANCE>.service-now.com"
+
+  # Authentication — use a service account for production
+  SERVICENOW_USERNAME: "<YOUR_USERNAME>"
+  SERVICENOW_PASSWORD: "<YOUR_PASSWORD>"
+
+  # Optional: restrict to specific tables
+  # SERVICENOW_TABLES: "incident,change_request,problem"
