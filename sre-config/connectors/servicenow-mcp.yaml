@@ -1,39 +1,95 @@
 # ─────────────────────────────────────────────────────────────
-# ServiceNow MCP Connector — Template
+# ServiceNow MCP Connector — Configuration for SRE Agent
 # ─────────────────────────────────────────────────────────────
-# Connects SRE Agent to a ServiceNow instance for incident
-# management (create, update, resolve incidents).
 #
-# Setup:
-#   1. Create a ServiceNow Developer Instance at https://developer.servicenow.com
-#   2. Enable the Incident table API (enabled by default)
-#   3. Create a service account or use admin credentials for the dev instance
-#   4. Replace the placeholder values below with your instance details
-#   5. Add this connector in the SRE Agent portal under Builder → Connectors
+# This connects SRE Agent to ServiceNow for creating, updating,
+# and resolving incidents with a full audit trail.
 #
-# Docs: https://sre.azure.com/docs/connectors/servicenow
+# WHY MCP (not Incident Platform)?
+#   - Incident Platform = inbound only (SNOW → Agent)
+#   - MCP connector = the agent can CREATE and UPDATE tickets
+#   - Use Azure Monitor alerts to TRIGGER investigations
+#   - Use ServiceNow MCP to DOCUMENT findings in SNOW tickets
+#
+# SETUP:
+#   1. Get a free ServiceNow Developer Instance:
+#      https://developer.servicenow.com → Request Instance
+#
+#   2. Note your instance URL (e.g., https://dev12345.service-now.com)
+#      and admin credentials (shown on the instance page)
+#
+#   3. In SRE Agent portal (sre.azure.com):
+#      → Select your agent (sre-powergrid)
+#      → Builder → Connectors → + Add connector
+#      → Choose "MCP Server (User provided connector)"
+#      → Connection type: Streamable-HTTP
+#      → Fill in the values below
+#
+#   4. Select tools to expose (at minimum):
+#      - create_incident
+#      - update_incident
+#      - add_work_notes
+#      - get_incident
+#      - search_incidents
+#
+#   5. Test in chat: "Create a test incident in ServiceNow"
+#
 # ─────────────────────────────────────────────────────────────
 
-name: servicenow
-description: ServiceNow incident management connector for PowerGrid
+# Configuration to enter in the SRE Agent portal:
 
-# Transport type — stdio runs the MCP server as a local process
-transport: stdio
+connector_name: servicenow-mcp
+connection_type: streamable-http
 
-# Command to launch the ServiceNow MCP server
-command: npx
-args:
-  - -y
-  - "@anthropic/mcp-servicenow"
+# Option A: Use a hosted ServiceNow MCP server (recommended)
+# ServiceNow's native MCP gateway (if available on your instance):
+url: "https://<YOUR_INSTANCE>.service-now.com/api/sn_mcp/mcp"
 
-# Environment variables passed to the MCP server process
-env:
-  # Your ServiceNow instance URL (e.g., https://dev12345.service-now.com)
-  SERVICENOW_INSTANCE_URL: "https://<YOUR_INSTANCE>.service-now.com"
+# Option B: Use a self-hosted MCP server
+# Deploy michaelbuckner/servicenow-mcp or servicenow-mcp-server (PyPI)
+# to Azure Container Apps and point to it:
+# url: "https://your-snow-mcp-server.azurecontainerapps.io/mcp"
 
-  # Authentication — use a service account for production
-  SERVICENOW_USERNAME: "<YOUR_USERNAME>"
-  SERVICENOW_PASSWORD: "<YOUR_PASSWORD>"
+# Authentication
+auth_method: basic  # or: bearer, oauth2
+# For basic auth:
+#   Username: admin (or your integration account)
+#   Password: <from your dev instance>
+# For OAuth 2.0 (production):
+#   Configure an OAuth app in ServiceNow:
+#     System OAuth → Application Registry → Create
+#     Grant type: Client Credentials
+#     Then use client_id + client_secret in the connector
 
-  # Optional: restrict to specific tables
-  # SERVICENOW_TABLES: "incident,change_request,problem"
+# Custom headers (if using basic auth with Streamable-HTTP):
+custom_headers:
+  Authorization: "Basic <base64(username:password)>"
+
+# ─────────────────────────────────────────────────────────────
+# Tools the agent will have access to:
+# ─────────────────────────────────────────────────────────────
+#
+# create_incident:
+#   Creates a new incident with short_description, description,
+#   urgency, impact, category, assignment_group, caller_id
+#
+# update_incident:
+#   Updates fields on an existing incident by sys_id or number
+#
+# add_work_notes:
+#   Appends work notes (internal audit trail) to an incident
+#   This is what SRE Agent uses to document its investigation
+#
+# add_comment:
+#   Appends customer-visible comments to an incident
+#
+# get_incident:
+#   Retrieves incident details by number (e.g., INC0010001)
+#
+# resolve_incident:
+#   Sets incident state to Resolved with resolution notes
+#
+# search_incidents:
+#   Searches incidents by query (e.g., state=active)
+# ─────────────────────────────────────────────────────────────
+
