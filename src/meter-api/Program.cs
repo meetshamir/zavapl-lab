@@ -1,4 +1,4 @@
-// meter-api: Simulated smart meter data service for the PPL ZeroOps Lab.
+// meter-api: Simulated smart meter data service for the Zava Power ZeroOps Lab.
 // Provides hourly usage, meter reads, and alerts for demo/observability scenarios.
 // Includes a SIMULATE_OOM mode that leaks memory on /health calls to exercise autoscaling and diagnostics.
 

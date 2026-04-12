@@ -2,7 +2,7 @@ targetScope = 'subscription'
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  PowerGrid ZeroOps Lab — Main Bicep Template                ║
-// ║  Deploys the full PPL ZeroOps SRE Agent demo environment    ║
+// ║  Deploys the full Zava Power ZeroOps SRE Agent demo environment    ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 @description('Azure region for all resources')
@@ -23,7 +23,7 @@ param imageTag string = 'latest'
 
 var resourceGroupName = 'rg-${workloadName}'
 var tags = {
-  project: 'ppl-zeroops-lab'
+  project: 'zava-power-zeroops-lab'
   environment: 'demo'
   managedBy: 'bicep'
 }

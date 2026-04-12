@@ -1,4 +1,4 @@
-// notification-svc: Simulates PPL's customer notification system.
+// notification-svc: Simulates Zava Power's customer notification system.
 // Handles outage alerts, billing reminders, meter warnings, and restoration updates.
 //
 // *** SCENARIO 4 — CrashLoopBackOff Simulation ***

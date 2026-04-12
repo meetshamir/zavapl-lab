@@ -7,7 +7,7 @@
 
 **An end-to-end Azure SRE Agent lab for utility-scale incident response — break PowerGrid services, watch the agent diagnose and fix them autonomously.**
 
-Built for the PPL ZeroOps initiative. Deploy a realistic power-utility microservices platform, inject failures, and experience AI-driven SRE in action.
+Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility microservices platform, inject failures, and experience AI-driven SRE in action.
 
 ---
 
@@ -150,15 +150,15 @@ Built for the PPL ZeroOps initiative. Deploy a realistic power-utility microserv
 
 **macOS / Linux:**
 ```bash
-git clone https://github.com/<ORG>/ppl-zeroops-lab.git
-cd ppl-zeroops-lab
+git clone https://github.com/<ORG>/zava-power-zeroops-lab.git
+cd zava-power-zeroops-lab
 bash scripts/setup.sh
 ```
 
 **Windows (Git Bash):**
 ```cmd
-git clone https://github.com/<ORG>/ppl-zeroops-lab.git
-cd ppl-zeroops-lab
+git clone https://github.com/<ORG>/zava-power-zeroops-lab.git
+cd zava-power-zeroops-lab
 "C:\Program Files\Git\bin\bash.exe" scripts/setup.sh
 ```
 
@@ -384,5 +384,5 @@ To clean up only the SRE Agent configuration, visit [sre.azure.com](https://sre.
 ---
 
 <p align="center">
-  Built with ⚡ by PPL · Powered by <a href="https://sre.azure.com">Azure SRE Agent</a>
+  Built with ⚡ by Zava Power · Powered by <a href="https://sre.azure.com">Azure SRE Agent</a>
 </p>

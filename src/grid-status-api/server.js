@@ -1,6 +1,6 @@
-// grid-status-api — PPL ZeroOps Lab
+// grid-status-api — Zava Power ZeroOps Lab
 //
-// Simulates PPL's internal grid management status system, providing
+// Simulates Zava Power's internal grid management status system, providing
 // real-time region status, capacity summaries, and grid alerts.
 // Used as a target microservice for ZeroOps observability and
 // deployment-automation demos.
@@ -44,9 +44,9 @@ function jitter(value, pct = 0.05) {
 
 /** Base region definitions — load values are jittered on every request. */
 const REGIONS_BASE = [
-  { region: "PPL Electric - Eastern PA",  baseLoad: 67, capacity_mw: 4200, substations_online: 142, substations_total: 145 },
-  { region: "PPL Electric - Central PA",  baseLoad: 54, capacity_mw: 3100, substations_online: 98,  substations_total: 100 },
-  { region: "PPL Electric - Western PA",  baseLoad: 72, capacity_mw: 2800, substations_online: 76,  substations_total: 80  },
+  { region: "Zava Power Electric - Eastern PA",  baseLoad: 67, capacity_mw: 4200, substations_online: 142, substations_total: 145 },
+  { region: "Zava Power Electric - Central PA",  baseLoad: 54, capacity_mw: 3100, substations_online: 98,  substations_total: 100 },
+  { region: "Zava Power Electric - Western PA",  baseLoad: 72, capacity_mw: 2800, substations_online: 76,  substations_total: 80  },
   { region: "LG&E - Louisville Metro",    baseLoad: 61, capacity_mw: 3600, substations_online: 112, substations_total: 115 },
   { region: "Narragansett - Rhode Island", baseLoad: 48, capacity_mw: 1900, substations_online: 54,  substations_total: 55  },
 ];

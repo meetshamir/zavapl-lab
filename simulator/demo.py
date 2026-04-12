@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   POWERGRID DEMO SIMULATOR — PPL ZeroOps SRE Agent Lab      ║
+║   POWERGRID DEMO SIMULATOR — Zava Power ZeroOps SRE Agent Lab      ║
 ╚══════════════════════════════════════════════════════════════╝
 
 A rich CLI simulator for demonstrating Azure SRE Agent
-capabilities in the PPL ZeroOps lab environment.
+capabilities in the Zava Power ZeroOps lab environment.
 
 Scenarios:
   1. Service Outage        — outage-api returns 503
@@ -262,7 +262,7 @@ BANNER = r"""[bold cyan]
   ██╔═══╝ ██║   ██║██║███╗██║██╔══╝  ██╔══██╗██║   ██║██╔══██╗██║██║  ██║
   ██║     ╚██████╔╝╚███╔███╔╝███████╗██║  ██║╚██████╔╝██║  ██║██║██████╔╝
   ╚═╝      ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝
-  [bold white]PPL ZeroOps — SRE Agent Demo Simulator[/bold white][/bold cyan]
+  [bold white]Zava Power ZeroOps — SRE Agent Demo Simulator[/bold white][/bold cyan]
 """
 
 

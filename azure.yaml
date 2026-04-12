@@ -1,6 +1,6 @@
-name: ppl-zeroops-lab
+name: zava-power-zeroops-lab
 metadata:
-  template: ppl-zeroops-lab@0.0.1
+  template: zava-power-zeroops-lab@0.0.1
 services:
   outage-api:
     project: ./src/outage-api

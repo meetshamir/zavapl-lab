@@ -1,3 +1,3 @@
-module github.com/ppl-zeroops-lab/notification-svc
+module github.com/zava-power-zeroops-lab/notification-svc
 
 go 1.22

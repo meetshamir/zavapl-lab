@@ -1,5 +1,5 @@
 name: utility-ops-agent
-description: PPL-specific agent for scheduled health checks across all PowerGrid services
+description: Zava Power-specific agent for scheduled health checks across all PowerGrid services
 instructions: |
   You are the PowerGrid utility operations agent. Perform scheduled health checks:
   1. Query health endpoints for the four backend services:

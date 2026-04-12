@@ -65,7 +65,7 @@ export default function Outages() {
       <h1>Current Outages</h1>
       <p className="subtitle">
         Showing {outages.length} active outage{outages.length !== 1 && "s"} across
-        the PPL service territory
+        the Zava Power service territory
       </p>
 
       <div className="table-wrap">

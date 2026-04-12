@@ -1,13 +1,13 @@
 """
-PPL ZeroOps Lab — Outage API Microservice
+Zava Power ZeroOps Lab — Outage API Microservice
 
-Simulates PPL Electric Utilities' outage reporting system for the ZeroOps
+Simulates Zava Power Electric' outage reporting system for the ZeroOps
 observability lab. Provides endpoints for querying active outages, submitting
 new outage reports, viewing outage map data, and retrieving operational metrics.
 
 This service is designed to be deployed as a container in Azure Container Apps
 and monitored via Application Insights, Grafana, and Azure Monitor as part of
-the PPL ZeroOps self-healing infrastructure demo.
+the Zava Power ZeroOps self-healing infrastructure demo.
 """
 
 import datetime

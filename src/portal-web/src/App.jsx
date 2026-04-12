@@ -12,7 +12,7 @@ export default function App() {
           <div className="logo">
             <span className="logo-icon">⚡</span>
             <span className="logo-text">PowerGrid</span>
-            <span className="logo-sub">PPL Electric Utilities</span>
+            <span className="logo-sub">Zava Power Electric</span>
           </div>
           <nav className="nav">
             <NavLink to="/" end>
@@ -36,7 +36,7 @@ export default function App() {
 
       <footer className="footer">
         <p>
-          &copy; {new Date().getFullYear()} PPL Electric Utilities — PowerGrid
+          &copy; {new Date().getFullYear()} Zava Power Electric — PowerGrid
           Portal &nbsp;|&nbsp; ZeroOps Lab Demo
         </p>
       </footer>
