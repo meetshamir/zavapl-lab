@@ -4,20 +4,17 @@
 # Builds container images and deploys to Azure Container Apps.
 #
 # Failure Scenarios (select via parameter):
-#   none    — Normal healthy deployment
-#   crash   — Deploys outage-api with FORCE_ERROR=true → 503s
-#   perf    — Deploys grid-status-api with SIMULATE_DELAY_MS=5000
-#   config  — Deploys notification-svc WITHOUT REQUIRED_CONFIG → crash loop
-#   all     — Injects all three failures simultaneously
+#   none    — Normal healthy deployment (good code from src/)
+#   crash   — Deploys outage-api with a real bug: NoneType crash
+#             in the new SCADA enrichment code (bugs/crash/app.py)
+#   perf    — Deploys grid-status-api with a real bug: synchronous
+#             SHA-256 loop blocking Node event loop (bugs/perf/server.js)
+#   config  — Deploys notification-svc with a real bug: wrong gateway
+#             port (9443 instead of 8443) causing timeouts (bugs/config/main.go)
+#   all     — Deploys all three buggy versions simultaneously
 #
-# End-to-end demo flow:
-#   1. Run this pipeline with failure_scenario=crash
-#   2. outage-api returns 503 → Azure Monitor alert fires
-#   3. SRE Agent investigates → correlates with this ADO pipeline run
-#   4. SRE Agent creates a fix PR in ADO repo
-#   5. PR triggers the "PowerGrid-BuildTest" (CI) pipeline
-#   6. CI passes → merge PR → this pipeline re-runs (clean deploy)
-#   7. Services healthy → SRE Agent confirms resolution
+# Each bug is a realistic code change — not an env var toggle.
+# SRE Agent can read the source code in ADO to find the root cause.
 
 trigger:
   branches:
@@ -68,12 +65,22 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                echo "Building outage-api..."
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                # If crash scenario, swap in the buggy source before building
+                if [ "$SCENARIO" = "crash" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Building outage-api with SCADA enrichment bug (bugs/crash/app.py)"
+                  cp bugs/crash/app.py src/outage-api/app.py
+                fi
+
                 az acr build --registry $(acrName) \
                   --image outage-api:$(Build.BuildId) \
                   --image outage-api:latest \
                   --file src/outage-api/Dockerfile \
                   src/outage-api/ --no-logs
+
+                # Restore clean source
+                git checkout -- src/outage-api/app.py 2>/dev/null || true
 
           - task: AzureCLI@2
             displayName: 'Build meter-api'
@@ -98,12 +105,21 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                echo "Building grid-status-api..."
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                # If perf scenario, swap in the buggy source before building
+                if [ "$SCENARIO" = "perf" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Building grid-status-api with checksum loop bug (bugs/perf/server.js)"
+                  cp bugs/perf/server.js src/grid-status-api/server.js
+                fi
+
                 az acr build --registry $(acrName) \
                   --image grid-status-api:$(Build.BuildId) \
                   --image grid-status-api:latest \
                   --file src/grid-status-api/Dockerfile \
                   src/grid-status-api/ --no-logs
+
+                git checkout -- src/grid-status-api/server.js 2>/dev/null || true
 
           - task: AzureCLI@2
             displayName: 'Build notification-svc'
@@ -113,12 +129,21 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
-                echo "Building notification-svc..."
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                # If config scenario, swap in the buggy source before building
+                if [ "$SCENARIO" = "config" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Building notification-svc with wrong gateway port (bugs/config/main.go)"
+                  cp bugs/config/main.go src/notification-svc/main.go
+                fi
+
                 az acr build --registry $(acrName) \
                   --image notification-svc:$(Build.BuildId) \
                   --image notification-svc:latest \
                   --file src/notification-svc/Dockerfile \
                   src/notification-svc/ --no-logs
+
+                git checkout -- src/notification-svc/main.go 2>/dev/null || true
 
           - task: AzureCLI@2
             displayName: 'Build portal-web'
@@ -158,25 +183,12 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      SCENARIO="${{ parameters.failure_scenario }}"
-                      echo "Deploying outage-api (scenario=$SCENARIO)..."
-
-                      if [ "$SCENARIO" = "crash" ] || [ "$SCENARIO" = "all" ]; then
-                        echo "⚠️  INJECTING CRASH: Setting FORCE_ERROR=true"
-                        az containerapp update \
-                          -n ca-$(workloadName)-outage \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/outage-api:$(Build.BuildId) \
-                          --set-env-vars FORCE_ERROR=true \
-                          --output none
-                      else
-                        az containerapp update \
-                          -n ca-$(workloadName)-outage \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/outage-api:$(Build.BuildId) \
-                          --remove-env-vars FORCE_ERROR \
-                          --output none
-                      fi
+                      echo "Deploying outage-api..."
+                      az containerapp update \
+                        -n ca-$(workloadName)-outage \
+                        -g $(resourceGroup) \
+                        --image $(acrName).azurecr.io/outage-api:$(Build.BuildId) \
+                        --output none
 
                 - task: AzureCLI@2
                   displayName: 'Deploy meter-api'
@@ -198,25 +210,12 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      SCENARIO="${{ parameters.failure_scenario }}"
-                      echo "Deploying grid-status-api (scenario=$SCENARIO)..."
-
-                      if [ "$SCENARIO" = "perf" ] || [ "$SCENARIO" = "all" ]; then
-                        echo "⚠️  INJECTING PERF REGRESSION: Setting SIMULATE_DELAY_MS=5000"
-                        az containerapp update \
-                          -n ca-$(workloadName)-grid \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
-                          --set-env-vars SIMULATE_DELAY_MS=5000 \
-                          --output none
-                      else
-                        az containerapp update \
-                          -n ca-$(workloadName)-grid \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
-                          --remove-env-vars SIMULATE_DELAY_MS \
-                          --output none
-                      fi
+                      echo "Deploying grid-status-api..."
+                      az containerapp update \
+                        -n ca-$(workloadName)-grid \
+                        -g $(resourceGroup) \
+                        --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
+                        --output none
 
                 - task: AzureCLI@2
                   displayName: 'Deploy notification-svc'
@@ -225,25 +224,13 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      SCENARIO="${{ parameters.failure_scenario }}"
-                      echo "Deploying notification-svc (scenario=$SCENARIO)..."
-
-                      if [ "$SCENARIO" = "config" ] || [ "$SCENARIO" = "all" ]; then
-                        echo "⚠️  INJECTING CONFIG FAILURE: Removing REQUIRED_CONFIG"
-                        az containerapp update \
-                          -n ca-$(workloadName)-notify \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
-                          --remove-env-vars REQUIRED_CONFIG \
-                          --output none
-                      else
-                        az containerapp update \
-                          -n ca-$(workloadName)-notify \
-                          -g $(resourceGroup) \
-                          --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
-                          --set-env-vars REQUIRED_CONFIG=enabled \
-                          --output none
-                      fi
+                      echo "Deploying notification-svc..."
+                      az containerapp update \
+                        -n ca-$(workloadName)-notify \
+                        -g $(resourceGroup) \
+                        --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
+                        --set-env-vars REQUIRED_CONFIG=enabled \
+                        --output none
 
                 - task: AzureCLI@2
                   displayName: 'Deploy portal-web'
