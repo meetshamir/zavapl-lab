@@ -8,36 +8,29 @@ description: "Diagnose and fix grid-status-api performance regressions including
 
 # grid-status-diagnosis
 
-
-## Trigger Keywords
-`high latency`, `slow response`, `timeout`, `grid-status-api`, `ca-powergrid-grid`, `SIMULATE_DELAY_MS`, `response time`, `delay`
-
 ## Scope
-The **grid-status-api** is a Node.js/Express service (`ca-powergrid-grid`) that provides real-time grid status and regional power data. This runbook covers the most common failure mode: the `SIMULATE_DELAY_MS` environment variable injecting artificial latency into all requests.
+The **grid-status-api** is a Node.js/Express service (`ca-powergrid-grid`) that provides real-time grid status and regional power data. This skill guides you through diagnosing any performance regression — from detecting latency spikes, through identifying whether the cause is code, configuration, or infrastructure, to applying the right fix.
 
 ---
 
-## Common Issue: SIMULATE_DELAY_MS Adding Artificial Latency
+## Phase 1: DETECT — Measure the Latency
 
-### Symptoms
-- All requests to grid-status-api are abnormally slow (response times in seconds)
-- Health checks may pass but with high latency
-- Upstream services and portal-web experience timeouts when calling grid-status-api
-- No error logs — requests eventually succeed but with added delay
-- CPU and memory are normal — the issue is purely latency
-- The slowdown aligns with a specific deployment/revision change
+### 1.1 Measure Current Response Times
+```bash
+# Time a request to grid-status-api
+curl -s -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" \
+  https://<grid-status-api-fqdn>/api/grid/status
 
-### Root Cause
-The `SIMULATE_DELAY_MS` environment variable is set on the container app (e.g., `SIMULATE_DELAY_MS=5000`). The Express middleware reads this value and adds an artificial `setTimeout` delay before processing each request. This simulates a bad deployment that introduced a performance regression.
+curl -s -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" \
+  https://<grid-status-api-fqdn>/health
+```
 
----
+Compare response times. Are ALL endpoints slow, or only specific ones? This distinction matters in Phase 2.
 
-## Phase 1: Detect — Confirm High Latency
-
-### 1.1 Check Request Latency in App Insights
+### 1.2 App Insights Latency Percentiles
 ```kql
 requests
-| where timestamp > ago(1h)
+| where timestamp > ago(2h)
 | where cloud_RoleName contains "grid"
 | summarize
     AvgDuration = avg(duration),
@@ -49,101 +42,55 @@ by bin(timestamp, 5m), name
 | order by timestamp desc
 ```
 
-### 1.2 High Latency Requests in Logs
+Establish: what is the current latency, and when did it change from baseline? Normal baseline is P50 < 200ms, P95 < 500ms.
+
+### 1.3 Latency Trend — Find the Inflection Point
 ```kql
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(1h)
-| where ContainerAppName_s == "ca-powergrid-grid"
-| where Log_s contains "ms" or Log_s contains "delay" or Log_s contains "latency" or Log_s contains "SIMULATE_DELAY"
-| project TimeGenerated, Log_s, RevisionName_s
-| order by TimeGenerated desc
-| take 50
+requests
+| where timestamp > ago(12h)
+| where cloud_RoleName contains "grid"
+| summarize
+    P50 = percentile(duration, 50),
+    P95 = percentile(duration, 95)
+by bin(timestamp, 10m)
+| order by timestamp asc
 ```
 
-### 1.3 Timeout Errors from Upstream Services
+Note the exact time latency spiked. You'll compare this to deployments and other events in Phase 2.
+
+### 1.4 Upstream Impact — Timeouts from Callers
 ```kql
 ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(1h)
+| where TimeGenerated > ago(2h)
 | where Log_s contains "timeout" or Log_s contains "ETIMEDOUT" or Log_s contains "ECONNRESET"
 | where Log_s contains "grid" or ContainerAppName_s contains "portal" or ContainerAppName_s contains "outage"
 | project TimeGenerated, ContainerAppName_s, Log_s
 | order by TimeGenerated desc
 ```
 
-### 1.4 Confirm via Timed Request
-```bash
-# Time a request to grid-status-api
-time curl -s -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" \
-  https://<grid-status-api-fqdn>/api/grid/status
-
-# Healthy: ~100-300ms
-# With SIMULATE_DELAY_MS=5000: ~5+ seconds
+### 1.5 Console Log Errors
+```kql
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(1h)
+| where ContainerAppName_s == "ca-powergrid-grid"
+| where Log_s contains "Error"
+    or Log_s contains "error"
+    or Log_s contains "WARN"
+    or Log_s contains "timeout"
+    or Log_s contains "FATAL"
+| project TimeGenerated, Log_s, RevisionName_s
+| order by TimeGenerated desc
+| take 50
 ```
 
 ---
 
-## Phase 2: Diagnose — Correlate with Deployment
+## Phase 2: INVESTIGATE — Find What's Causing the Latency
 
-### 2.1 Check Environment Variables
-```bash
-az containerapp show \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  --query "properties.template.containers[0].env" \
-  -o table
-```
-
-Look for:
-```json
-{
-  "name": "SIMULATE_DELAY_MS",
-  "value": "5000"
-}
-```
-
-### 2.2 List Revisions and Identify Bad Deployment
-```bash
-az containerapp revision list \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  -o table
-```
-
-### 2.3 Correlate Deployment Time with Latency Onset
+### 2.1 Check CPU and Memory — Is It a Resource Issue?
 ```kql
-// Get deployment events
-let deployEvents = ContainerAppSystemLogs_CL
-| where TimeGenerated > ago(24h)
-| where ContainerAppName_s == "ca-powergrid-grid"
-| where Log_s contains "revision" or Log_s contains "deploy" or Log_s contains "Pulling" or Log_s contains "Started"
-| project DeployTime = TimeGenerated, Log_s, RevisionName_s;
-// Get latency trend
-let latencyTrend = requests
-| where timestamp > ago(24h)
-| where cloud_RoleName contains "grid"
-| summarize AvgDuration = avg(duration), P95 = percentile(duration, 95) by bin(timestamp, 10m);
-// Show both for correlation
-deployEvents
-| order by DeployTime desc
-```
-
-### 2.4 Compare Revisions — Before and After
-```kql
-// Latency by revision
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(24h)
-| where ContainerAppName_s == "ca-powergrid-grid"
-| where Log_s matches regex @"\d+ms"
-| extend RevisionShort = tostring(split(RevisionName_s, "--")[1])
-| summarize LogCount = count() by RevisionShort, bin(TimeGenerated, 15m)
-| order by TimeGenerated desc
-```
-
-### 2.5 Verify It's Not a Real Performance Issue
-```kql
-// CPU and memory are normal during high latency → artificial delay
 AzureMetrics
-| where TimeGenerated > ago(1h)
+| where TimeGenerated > ago(2h)
 | where ResourceProvider == "MICROSOFT.APP"
 | where MetricName in ("UsageNanoCores", "WorkingSetBytes")
 | where _ResourceId contains "ca-powergrid-grid"
@@ -151,57 +98,12 @@ AzureMetrics
 | order by TimeGenerated desc
 ```
 
----
+- **High CPU + high latency** → CPU-bound operation blocking the Node.js event loop (e.g., synchronous computation, tight loop)
+- **Normal CPU + high latency** → Not a CPU problem; likely an artificial delay, slow dependency, or connection pool exhaustion
+- **High memory** → Possible memory pressure causing GC pauses
 
-## Phase 3: Fix — Remove SIMULATE_DELAY_MS or Rollback
-
-### Option A: Remove the Environment Variable
+### 2.2 Check Environment Variables
 ```bash
-az containerapp update \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  --remove-env-vars SIMULATE_DELAY_MS
-```
-
-### Option B: Rollback to Previous Revision
-
-Use this if the bad deployment also included other problematic changes.
-
-```bash
-# 1. List revisions to find the last known good revision
-az containerapp revision list \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  -o table
-
-# 2. Activate the previous (good) revision
-az containerapp revision activate \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  --revision <previous-good-revision>
-
-# 3. Route 100% traffic to the good revision
-az containerapp ingress traffic set \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  --revision-weight <previous-good-revision>=100
-
-# 4. Deactivate the bad revision
-az containerapp revision deactivate \
-  -g <resourceGroup> \
-  -n ca-powergrid-grid \
-  --revision <bad-revision>
-```
-
-### 3.1 Verify the Fix
-```bash
-# Wait 30-60 seconds, then:
-
-# Time a request — should be fast now
-time curl -s -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" \
-  https://<grid-status-api-fqdn>/api/grid/status
-
-# Check env vars are clean
 az containerapp show \
   -g <resourceGroup> \
   -n ca-powergrid-grid \
@@ -209,48 +111,86 @@ az containerapp show \
   -o table
 ```
 
----
+Look for any env var that could inject delays, alter timeouts, or change service behavior.
 
-## Phase 4: Verify — Confirm Latency is Normal
-
-### 4.1 Latency After Fix
+### 2.3 Correlate Latency Onset with Deployments
 ```kql
-requests
-| where timestamp > ago(30m)
-| where cloud_RoleName contains "grid"
-| summarize
-    AvgDuration = avg(duration),
-    P95 = percentile(duration, 95),
-    RequestCount = count()
-by bin(timestamp, 5m)
-| order by timestamp desc
+ContainerAppSystemLogs_CL
+| where TimeGenerated > ago(24h)
+| where ContainerAppName_s == "ca-powergrid-grid"
+| where Log_s contains "revision" or Log_s contains "Pulling" or Log_s contains "Started" or Log_s contains "created"
+| project TimeGenerated, Log_s, RevisionName_s
+| order by TimeGenerated desc
 ```
 
-Expected: Avg duration < 500ms, P95 < 1s.
+Did the latency spike start at the same time as a new revision? If so, the deployment is the likely cause.
 
-### 4.2 No More Timeout Errors Upstream
-```kql
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(30m)
-| where Log_s contains "timeout" or Log_s contains "ETIMEDOUT"
-| where Log_s contains "grid"
-| summarize Count = count()
-```
-
-Expected: Count = 0.
-
-### 4.3 Active Revision Confirmation
+### 2.4 List Revisions — Compare Current with Previous
 ```bash
 az containerapp revision list \
   -g <resourceGroup> \
   -n ca-powergrid-grid \
-  --query "[?properties.active==\`true\`].{Name:name, Created:properties.createdTime, TrafficWeight:properties.trafficWeight}" \
   -o table
+```
+
+### 2.5 Check Dependency Performance
+```kql
+dependencies
+| where timestamp > ago(1h)
+| where cloud_RoleName contains "grid"
+| summarize
+    AvgDuration = avg(duration),
+    P95 = percentile(duration, 95),
+    FailureCount = countif(success == false)
+by target, type
+| order by AvgDuration desc
+```
+
+Slow dependencies (database, downstream APIs) can cause the service to appear slow even if its own code is fast.
+
+### 2.6 Look for Event Loop Blocking Indicators
+```kql
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(1h)
+| where ContainerAppName_s == "ca-powergrid-grid"
+| where Log_s contains "event loop"
+    or Log_s contains "blocked"
+    or Log_s contains "CPU"
+    or Log_s contains "sync"
+    or Log_s contains "intensive"
+| project TimeGenerated, Log_s
+| order by TimeGenerated desc
+```
+
+### 2.7 Check for Connection Pool Issues
+```kql
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(1h)
+| where ContainerAppName_s == "ca-powergrid-grid"
+| where Log_s contains "pool"
+    or Log_s contains "connection"
+    or Log_s contains "ECONNREFUSED"
+    or Log_s contains "ENOTFOUND"
+    or Log_s contains "socket hang up"
+| project TimeGenerated, Log_s
+| order by TimeGenerated desc
 ```
 
 ---
 
-## Latency Thresholds Reference
+## Phase 3: ROOT CAUSE — Interpret Findings
+
+| Finding | Likely Root Cause | Next Step |
+|---------|-------------------|-----------|
+| All endpoints uniformly slow, normal CPU/memory | Artificial delay injected via env var or middleware | Check env vars, remove the offending setting |
+| Latency spike aligns exactly with deployment | Bad deployment introduced slow code or config | Rollback to previous revision |
+| High CPU correlating with latency | CPU-bound synchronous operation blocking event loop | Rollback or fix blocking code |
+| Slow on specific endpoints only, others fast | Endpoint-specific issue (slow query, slow dependency) | Check dependency latency for those endpoints |
+| Normal latency in App Insights but callers report timeouts | Network-level issue or ingress timeout misconfiguration | Check ingress settings and Container App networking |
+| Dependency calls show high latency | Downstream dependency is slow, not this service | Investigate the slow dependency |
+| Memory growing + increasing GC pauses | Node.js memory leak causing GC-induced latency | Check for memory leaks, restart or increase memory |
+
+### Latency Thresholds
 
 | Metric | Normal | Warning | Critical |
 |--------|--------|---------|----------|
@@ -261,22 +201,76 @@ az containerapp revision list \
 
 ---
 
-## Other Possible Issues
+## Phase 4: FIX — Apply the Appropriate Remediation
 
-| Symptom | Possible Cause | Investigation |
-|---------|----------------|---------------|
-| Uniform high latency on all endpoints | `SIMULATE_DELAY_MS` set | Check env vars (this runbook) |
-| Slow on specific endpoints only | Database query performance | Check Azure SQL metrics |
-| Intermittent timeouts | Network connectivity | Check Container App Environment logs |
-| Increasing latency over time | Memory leak or CPU saturation | Check resource metrics |
-| 502/503 after long wait | Upstream timeout exceeded | Check ingress timeout settings |
+Choose based on Phase 3 findings. Do NOT guess — match the fix to the diagnosed cause.
+
+### Option A: Remove a Problematic Environment Variable
+```bash
+az containerapp update \
+  -g <resourceGroup> \
+  -n ca-powergrid-grid \
+  --remove-env-vars <ENV_VAR_NAME>
+```
+
+### Option B: Rollback to Previous Revision
+Use the `deployment-rollback` skill for a safe rollback procedure.
+
+### Option C: Scale Out
+```bash
+az containerapp update \
+  -g <resourceGroup> \
+  -n ca-powergrid-grid \
+  --min-replicas 2 \
+  --max-replicas 5
+```
+
+### Verify the Fix
+```bash
+# Wait 30-60 seconds, then time a request
+curl -s -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" \
+  https://<grid-status-api-fqdn>/api/grid/status
+```
+
+```kql
+// Confirm latency has returned to baseline
+requests
+| where timestamp > ago(15m)
+| where cloud_RoleName contains "grid"
+| summarize
+    AvgDuration = avg(duration),
+    P95 = percentile(duration, 95),
+    RequestCount = count()
+by bin(timestamp, 5m)
+| order by timestamp desc
+```
+
+```kql
+// Confirm no more upstream timeouts
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(15m)
+| where Log_s contains "timeout" or Log_s contains "ETIMEDOUT"
+| where Log_s contains "grid"
+| summarize Count = count()
+```
+
+```bash
+# Confirm active revision
+az containerapp revision list \
+  -g <resourceGroup> \
+  -n ca-powergrid-grid \
+  --query "[?properties.active==\`true\`].{Name:name, Created:properties.createdTime, TrafficWeight:properties.trafficWeight}" \
+  -o table
+```
+
+If latency persists after fix, re-enter Phase 2 with fresh data.
 
 ---
 
 ## Escalation
 
 Escalate if:
-- Removing `SIMULATE_DELAY_MS` does not resolve the latency
-- Rollback to previous revision still shows high latency
-- Latency is caused by database or downstream dependency issues
-- Portal-web is completely non-functional due to grid-status-api timeouts
+- Root cause cannot be determined from available metrics and logs
+- The fix does not return latency to normal within 5 minutes
+- Latency is caused by infrastructure or networking outside your control
+- Multiple downstream services are affected (systemic issue)

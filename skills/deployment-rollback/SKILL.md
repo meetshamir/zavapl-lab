@@ -8,68 +8,87 @@ description: "Execute safe rollback of Azure Container Apps to a previous health
 
 # deployment-rollback
 
-
-## Trigger Keywords
-`rollback`, `revert`, `bad deployment`, `previous revision`, `deploy failure`, `revision`, `traffic split`
-
 ## Scope
-General procedure for rolling back Azure Container Apps deployments in the PowerGrid environment. Use this when a bad deployment is identified as the root cause of an incident and the fastest remediation is to revert to the previous working revision.
+Generic procedure for safely rolling back any Azure Container App to a previous healthy revision. This skill covers the full lifecycle: identifying which revision to roll back to, pre-rollback safety checks, executing the rollback, and validating recovery.
 
 ---
 
-## When to Rollback
+## When to Use This Skill
 
 Rollback is appropriate when:
 - An incident started immediately after a deployment
 - The previous revision was known to be healthy
 - The fix requires a code change that will take time to develop
-- The bad deployment introduced a misconfiguration (e.g., bad env vars)
+- The bad deployment introduced a misconfiguration
 
-Rollback is **not** appropriate when:
-- The issue is infrastructure-related (database, networking)
-- The previous revision has the same issue
-- A database migration was applied that is incompatible with the old code
+Rollback is **NOT** appropriate when:
+- The issue is infrastructure-related (database, networking) — fix the infrastructure instead
+- The previous revision has the same issue — rollback won't help
+- A database migration was applied that is incompatible with old code — fix forward instead
 
 ---
 
-## Phase 1: Identify — Correlate Incident with Deployment
+## Phase 1: IDENTIFY — List Revisions and Determine Which Is Healthy
 
-### 1.1 Determine When the Incident Started
-```kql
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(24h)
-| where ContainerAppName_s == "<container-app-name>"
-| where Log_s contains "error" or Log_s contains "Error" or Log_s contains "500" or Log_s contains "503"
-| summarize ErrorCount = count() by bin(TimeGenerated, 5m)
-| order by TimeGenerated asc
-| where ErrorCount > 0
+### 1.1 List All Revisions
+```bash
+az containerapp revision list \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  -o table
 ```
 
-### 1.2 Find Deployment Events Around Incident Time
-```kql
-ContainerAppSystemLogs_CL
-| where TimeGenerated > ago(24h)
-| where ContainerAppName_s == "<container-app-name>"
-| where Log_s contains "revision"
-    or Log_s contains "deploy"
-    or Log_s contains "Pulling"
-    or Log_s contains "Started"
-    or Log_s contains "created"
-| project TimeGenerated, Log_s, RevisionName_s
-| order by TimeGenerated desc
+Note the output columns: **Name**, **Active**, **Created**, **Traffic Weight**, **Health State**, **Provisioning State**.
+
+Identify:
+- **Current (potentially bad) revision**: the one receiving traffic now
+- **Previous revision(s)**: candidates for rollback
+
+### 1.2 Inspect a Specific Revision
+```bash
+az containerapp revision show \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --revision <revision-name> \
+  -o json
 ```
 
-### 1.3 Overlay Errors with Deployments
+### 1.3 Compare Configurations Between Revisions
+```bash
+# Current revision's env vars
+az containerapp show \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --query "properties.template.containers[0].env" \
+  -o json
+
+# Current revision's image
+az containerapp show \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --query "properties.template.containers[0].image" \
+  -o tsv
+
+# Previous revision's image (to see what changed)
+az containerapp revision show \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --revision <previous-revision-name> \
+  --query "properties.template.containers[0].image" \
+  -o tsv
+```
+
+### 1.4 Confirm Deployment Correlates with Incident Onset
 ```kql
 let errors = ContainerAppConsoleLogs_CL
 | where TimeGenerated > ago(24h)
 | where ContainerAppName_s == "<container-app-name>"
-| where Log_s contains "error" or Log_s contains "500" or Log_s contains "503"
+| where Log_s contains "error" or Log_s contains "Error" or Log_s contains "500" or Log_s contains "503"
 | summarize ErrorCount = count() by bin(TimeGenerated, 10m);
 let deploys = ContainerAppSystemLogs_CL
 | where TimeGenerated > ago(24h)
 | where ContainerAppName_s == "<container-app-name>"
-| where Log_s contains "revision" or Log_s contains "Pulling"
+| where Log_s contains "revision" or Log_s contains "Pulling" or Log_s contains "created"
 | summarize DeployEvents = count() by bin(TimeGenerated, 10m);
 errors
 | join kind=fullouter deploys on TimeGenerated
@@ -79,11 +98,15 @@ errors
 | order by TimeGenerated asc
 ```
 
+If errors spiked at the same time as a deploy event, the deployment is confirmed as the cause.
+
 ---
 
-## Phase 2: Prepare — List and Assess Revisions
+## Phase 2: PRE-ROLLBACK SAFETY CHECKS
 
-### 2.1 List All Revisions
+Before rolling back, verify each of these:
+
+### 2.1 Is the Previous Revision Still Available?
 ```bash
 az containerapp revision list \
   -g <resourceGroup> \
@@ -91,66 +114,40 @@ az containerapp revision list \
   -o table
 ```
 
-Output shows: Name, Active, Created, Traffic Weight, Health State, Provisioning State.
+The target revision must appear in the list. If it's been garbage-collected, you cannot roll back to it.
 
-### 2.2 Identify the Bad and Good Revisions
-```bash
-# Show details of a specific revision
-az containerapp revision show \
-  -g <resourceGroup> \
-  -n <container-app-name> \
-  --revision <revision-name> \
-  -o json
-```
-
-### 2.3 Compare Revision Configurations
-```bash
-# Get env vars for current (bad) revision
-az containerapp show \
-  -g <resourceGroup> \
-  -n <container-app-name> \
-  --query "properties.template.containers[0].env" \
-  -o json
-
-# Compare with previous revision's container image/tag
-az containerapp revision show \
-  -g <resourceGroup> \
-  -n <container-app-name> \
-  --revision <previous-revision-name> \
-  --query "properties.template.containers[0].image"
-```
-
----
-
-## Phase 3: Safety Checks Before Rollback
-
-Before proceeding with rollback, verify:
-
-| Check | Command | Pass Criteria |
-|-------|---------|---------------|
-| Previous revision exists | `az containerapp revision list` | Listed in output |
-| Previous revision image exists in ACR | `az acr repository show-tags` | Tag exists |
-| No database schema changes | Check migration history | No breaking migrations |
-| No API contract changes | Review changelog | Backwards compatible |
-| Previous revision was healthy | Check historical logs | No errors before this deployment |
-
-### 3.1 Verify Previous Revision Health (Historical)
+### 2.2 Was the Previous Revision Actually Healthy?
 ```kql
 ContainerAppConsoleLogs_CL
 | where TimeGenerated > ago(48h)
 | where ContainerAppName_s == "<container-app-name>"
 | where RevisionName_s == "<previous-revision-name>"
-| where Log_s contains "error" or Log_s contains "500"
+| where Log_s contains "error" or Log_s contains "Error" or Log_s contains "500"
 | summarize ErrorCount = count()
 ```
 
-Expected: Low or zero errors for the previous revision.
+If ErrorCount is high for the previous revision too, rolling back won't help. Find an older healthy revision or fix forward.
+
+### 2.3 Were There Database Migrations?
+Check whether the current deployment included schema changes. If it did, rolling back to old code that expects the old schema may break things. If unsure, check with the development team before proceeding.
+
+### 2.4 Will Rollback Break Other Services?
+If the new revision introduced a new API contract that other services now depend on, rolling back will break those callers. Check whether other services were deployed at the same time.
+
+### Safety Check Summary
+
+| Check | How to Verify | Pass Criteria |
+|-------|---------------|---------------|
+| Previous revision exists | `az containerapp revision list` | Listed in output |
+| Previous revision was healthy | Query historical logs above | Low/zero error count |
+| No breaking database migrations | Check deployment notes/changelog | No schema changes |
+| No breaking API contract changes | Check caller dependencies | Backwards compatible |
 
 ---
 
-## Phase 4: Execute Rollback
+## Phase 3: EXECUTE ROLLBACK
 
-### 4.1 Activate the Previous Good Revision
+### 3.1 Activate the Previous Good Revision
 ```bash
 az containerapp revision activate \
   -g <resourceGroup> \
@@ -158,16 +155,15 @@ az containerapp revision activate \
   --revision <previous-good-revision>
 ```
 
-### 4.2 Shift Traffic to the Good Revision
+### 3.2 Shift 100% Traffic to the Good Revision
 ```bash
-# Route 100% traffic to the good revision
 az containerapp ingress traffic set \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision-weight <previous-good-revision>=100
 ```
 
-### 4.3 Deactivate the Bad Revision
+### 3.3 Deactivate the Bad Revision
 ```bash
 az containerapp revision deactivate \
   -g <resourceGroup> \
@@ -176,75 +172,28 @@ az containerapp revision deactivate \
 ```
 
 ### Alternative: Gradual Traffic Shift (Canary Rollback)
+If you want to be cautious, shift traffic gradually:
 ```bash
-# If you want to be cautious, shift traffic gradually:
-
-# Step 1: 80/20 split
+# Step 1: 80/20 split — send most traffic to the good revision
 az containerapp ingress traffic set \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision-weight <previous-good-revision>=80 <bad-revision>=20
 
-# Step 2: Monitor for 5 minutes, then go 100/0
+# Step 2: Monitor for 5 minutes, then shift fully
 az containerapp ingress traffic set \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision-weight <previous-good-revision>=100
 
-# Step 3: Deactivate bad
+# Step 3: Deactivate the bad revision
 az containerapp revision deactivate \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision <bad-revision>
 ```
 
----
-
-## Phase 5: Verify Rollback Success
-
-### 5.1 Confirm Active Revision
-```bash
-az containerapp revision list \
-  -g <resourceGroup> \
-  -n <container-app-name> \
-  --query "[?properties.active==\`true\`].{Name:name, TrafficWeight:properties.trafficWeight, Created:properties.createdTime}" \
-  -o table
-```
-
-### 5.2 Confirm Error Rate Dropping
-```kql
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(30m)
-| where ContainerAppName_s == "<container-app-name>"
-| summarize
-    TotalLogs = count(),
-    ErrorLogs = countif(Log_s contains "error" or Log_s contains "500" or Log_s contains "503")
-by bin(TimeGenerated, 5m)
-| extend ErrorRate = round(100.0 * ErrorLogs / TotalLogs, 2)
-| order by TimeGenerated desc
-```
-
-### 5.3 Confirm Service Health
-```bash
-# Test health endpoint
-curl -s -w "\nHTTP Status: %{http_code}\n" https://<app-fqdn>/health
-```
-
-### 5.4 Confirm No Restarts
-```kql
-AzureMetrics
-| where TimeGenerated > ago(30m)
-| where ResourceProvider == "MICROSOFT.APP"
-| where MetricName == "RestartCount"
-| where _ResourceId contains "<container-app-name>"
-| summarize MaxRestarts = max(Maximum) by bin(TimeGenerated, 5m)
-| order by TimeGenerated desc
-```
-
----
-
-## Quick Reference — Rollback Commands
-
+### Quick Reference
 ```bash
 # Full rollback in 3 commands:
 az containerapp revision activate -g <rg> -n <app> --revision <good-rev>
@@ -254,15 +203,75 @@ az containerapp revision deactivate -g <rg> -n <app> --revision <bad-rev>
 
 ---
 
+## Phase 4: VALIDATE — Confirm Rollback Success
+
+### 4.1 Confirm Active Revision
+```bash
+az containerapp revision list \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --query "[?properties.active==\`true\`].{Name:name, TrafficWeight:properties.trafficWeight, Created:properties.createdTime}" \
+  -o table
+```
+
+The good revision should be the only active revision with 100% traffic.
+
+### 4.2 Health Check
+```bash
+curl -s -w "\nHTTP Status: %{http_code}\n" https://<app-fqdn>/health
+```
+
+### 4.3 Error Rate After Rollback
+```kql
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(15m)
+| where ContainerAppName_s == "<container-app-name>"
+| summarize
+    TotalLogs = count(),
+    ErrorLogs = countif(Log_s contains "error" or Log_s contains "Error" or Log_s contains "500" or Log_s contains "503")
+by bin(TimeGenerated, 5m)
+| extend ErrorRate = round(100.0 * ErrorLogs / TotalLogs, 2)
+| order by TimeGenerated desc
+```
+
+Error rate should be dropping toward 0%.
+
+### 4.4 Latency Returned to Normal
+```kql
+requests
+| where timestamp > ago(15m)
+| where cloud_RoleName contains "<service-name>"
+| summarize
+    AvgDuration = avg(duration),
+    P95 = percentile(duration, 95)
+by bin(timestamp, 5m)
+| order by timestamp desc
+```
+
+### 4.5 No Container Restarts
+```kql
+AzureMetrics
+| where TimeGenerated > ago(15m)
+| where ResourceProvider == "MICROSOFT.APP"
+| where MetricName == "RestartCount"
+| where _ResourceId contains "<container-app-name>"
+| summarize MaxRestarts = max(Maximum) by bin(TimeGenerated, 5m)
+| order by TimeGenerated desc
+```
+
+If any validation step fails, investigate whether the previous revision also has issues. You may need to find an even older revision or fix forward.
+
+---
+
 ## Rollback Decision Matrix
 
-| Situation | Action | Notes |
-|-----------|--------|-------|
-| Bad env var introduced | Remove env var (faster than rollback) | Use `--remove-env-vars` |
-| Bad code in new image | Rollback to previous revision | This runbook |
-| Bad config + bad code | Rollback to previous revision | This runbook |
-| Database migration issue | **Do not rollback** — fix forward | Rollback may break data |
-| Infrastructure issue | **Do not rollback** — fix infrastructure | Not a deployment problem |
+| Situation | Recommended Action |
+|-----------|-------------------|
+| Bad env var introduced | Remove env var with `--remove-env-vars` (faster than rollback) |
+| Bad code in new container image | Rollback to previous revision (this skill) |
+| Bad config + bad code | Rollback to previous revision (this skill) |
+| Database migration applied | **Do NOT rollback** — fix forward to avoid data integrity issues |
+| Infrastructure issue (networking, DB down) | **Do NOT rollback** — fix the infrastructure |
 
 ---
 
@@ -270,7 +279,7 @@ az containerapp revision deactivate -g <rg> -n <app> --revision <bad-rev>
 
 Escalate if:
 - The previous revision is also unhealthy
-- No known good revision exists
-- Database schema changes prevent rollback
+- No known good revision exists (all revisions have been garbage-collected)
+- Database schema changes prevent safe rollback
 - Multiple services need coordinated rollback
 - Rollback does not resolve the incident within 10 minutes

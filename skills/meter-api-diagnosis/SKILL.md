@@ -8,48 +8,46 @@ description: "Diagnose and fix meter-api issues including OOM kills, memory leak
 
 # meter-api-diagnosis
 
-
-## Trigger Keywords
-`OOM`, `OutOfMemory`, `memory leak`, `container restart`, `meter-api`, `ca-powergrid-meter`, `SIMULATE_OOM`, `crash`, `killed`
-
 ## Scope
-The **meter-api** is a .NET 8 Web API service (`ca-powergrid-meter`) that manages meter readings and data. This runbook covers the most common failure mode: the `SIMULATE_OOM` environment variable causing a memory leak that leads to OOM kills and container restarts.
+The **meter-api** is a .NET 8 Web API service (`ca-powergrid-meter`) that manages meter readings and data. This skill guides you through a systematic investigation of container restarts, memory pressure, OOM kills, and other .NET-specific failures.
 
 ---
 
-## Common Issue: SIMULATE_OOM Causing Memory Leak → OOM Kill
+## Phase 1: DETECT — Check Health and Container Stability
 
-### Symptoms
-- Container restarts repeatedly (visible in revision status)
-- Memory usage climbs steadily over time until hitting the limit
-- HTTP 500/503 errors intermittently (during restart windows)
-- Logs show `OutOfMemory`, `OOM`, or `Killed` messages
-- .NET garbage collection logs show increasingly large heap sizes
-- Health checks fail during restart cycles
-
-### Root Cause
-The `SIMULATE_OOM` environment variable is set to `true` on the container app. When enabled, the .NET application allocates memory in a background thread without releasing it, simulating a memory leak. Memory grows until the container exceeds its 1 Gi limit and is OOM-killed by the platform, triggering a restart. The cycle repeats.
-
----
-
-## Phase 1: Detect — Confirm OOM Events
-
-### 1.1 Check for OOM / Memory Events in Console Logs
-```kql
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(2h)
-| where ContainerAppName_s == "ca-powergrid-meter"
-| where Log_s contains "OutOfMemory"
-    or Log_s contains "OOM"
-    or Log_s contains "Killed"
-    or Log_s contains "memory"
-    or Log_s contains "System.OutOfMemoryException"
-| project TimeGenerated, Log_s, RevisionName_s
-| order by TimeGenerated desc
-| take 50
+### 1.1 Check Service Health
+```bash
+curl -s -w "\nHTTP Status: %{http_code}\n" https://<meter-api-fqdn>/health
+curl -s -w "\nHTTP Status: %{http_code}\n" https://<meter-api-fqdn>/api/meters
 ```
 
-### 1.2 Check for Container Restart Events
+### 1.2 Check Container Restart Count
+```kql
+AzureMetrics
+| where TimeGenerated > ago(4h)
+| where ResourceProvider == "MICROSOFT.APP"
+| where MetricName == "RestartCount"
+| where _ResourceId contains "ca-powergrid-meter"
+| summarize MaxRestarts = max(Maximum) by bin(TimeGenerated, 5m)
+| order by TimeGenerated desc
+```
+
+A climbing restart count indicates crash-looping. Note the pattern — constant restarts vs. periodic restarts.
+
+### 1.3 Memory Usage Trend
+```kql
+AzureMetrics
+| where TimeGenerated > ago(4h)
+| where ResourceProvider == "MICROSOFT.APP"
+| where MetricName == "WorkingSetBytes" or MetricName == "MemoryPercentage"
+| where _ResourceId contains "ca-powergrid-meter"
+| summarize AvgValue = avg(Average), MaxValue = max(Maximum) by bin(TimeGenerated, 5m), MetricName
+| order by TimeGenerated asc
+```
+
+Look for the shape: **flat** (healthy), **sawtooth** (OOM crash + restart cycle), or **steady climb** (leak without crash yet).
+
+### 1.4 Check for System-Level Events (OOM kills, restarts, failures)
 ```kql
 ContainerAppSystemLogs_CL
 | where TimeGenerated > ago(2h)
@@ -59,88 +57,64 @@ ContainerAppSystemLogs_CL
     or Log_s contains "BackOff"
     or Log_s contains "Unhealthy"
     or Log_s contains "killed"
+    or Log_s contains "exit"
+    or Log_s contains "Failed"
 | project TimeGenerated, Log_s, RevisionName_s, Reason_s
 | order by TimeGenerated desc
 ```
 
-### 1.3 Container Restart Count Over Time
-```kql
-AzureMetrics
-| where TimeGenerated > ago(2h)
-| where ResourceProvider == "MICROSOFT.APP"
-| where MetricName == "RestartCount"
-| where _ResourceId contains "ca-powergrid-meter"
-| summarize MaxRestarts = max(Maximum), AvgRestarts = avg(Average)
-by bin(TimeGenerated, 5m)
-| order by TimeGenerated desc
-```
-
-### 1.4 Memory Usage Trend
-```kql
-AzureMetrics
-| where TimeGenerated > ago(2h)
-| where ResourceProvider == "MICROSOFT.APP"
-| where MetricName == "WorkingSetBytes" or MetricName == "MemoryPercentage"
-| where _ResourceId contains "ca-powergrid-meter"
-| summarize AvgValue = avg(Average), MaxValue = max(Maximum) by bin(TimeGenerated, 5m), MetricName
-| order by TimeGenerated desc
-```
-
-### 1.5 Memory Pressure with Error Correlation
-```kql
-let memoryEvents = ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(2h)
-| where ContainerAppName_s == "ca-powergrid-meter"
-| where Log_s contains "OutOfMemory" or Log_s contains "OOM"
-| summarize OOMCount = count() by bin(TimeGenerated, 5m);
-let errorEvents = ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(2h)
-| where ContainerAppName_s == "ca-powergrid-meter"
-| where Log_s contains "500" or Log_s contains "error" or Log_s contains "Error"
-| summarize ErrorCount = count() by bin(TimeGenerated, 5m);
-memoryEvents
-| join kind=fullouter errorEvents on TimeGenerated
-| project TimeGenerated, OOMCount = coalesce(OOMCount, 0), ErrorCount = coalesce(ErrorCount, 0)
-| order by TimeGenerated desc
-```
-
----
-
-## Phase 2: Diagnose — .NET Specific Diagnostics
-
-### 2.1 Check for SIMULATE_OOM Environment Variable
-```bash
-az containerapp show \
-  -g <resourceGroup> \
-  -n ca-powergrid-meter \
-  --query "properties.template.containers[0].env" \
-  -o table
-```
-
-Look for:
-```json
-{
-  "name": "SIMULATE_OOM",
-  "value": "true"
-}
-```
-
-### 2.2 .NET GC and Heap Diagnostics in Logs
+### 1.5 Console Log Errors — Get the Full Picture
 ```kql
 ContainerAppConsoleLogs_CL
 | where TimeGenerated > ago(2h)
 | where ContainerAppName_s == "ca-powergrid-meter"
-| where Log_s contains "GC"
-    or Log_s contains "heap"
-    or Log_s contains "Heap"
-    or Log_s contains "gen0"
-    or Log_s contains "gen1"
-    or Log_s contains "gen2"
-    or Log_s contains "LOH"
-    or Log_s contains "finaliz"
+| where Log_s contains "Error"
+    or Log_s contains "Exception"
+    or Log_s contains "OutOfMemory"
+    or Log_s contains "Killed"
+    or Log_s contains "FATAL"
+    or Log_s contains "Unhandled"
+| project TimeGenerated, Log_s, RevisionName_s
+| order by TimeGenerated desc
+| take 50
+```
+
+---
+
+## Phase 2: INVESTIGATE — Diagnose the .NET Failure
+
+### 2.1 Look for OOM Indicators
+```kql
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(2h)
+| where ContainerAppName_s == "ca-powergrid-meter"
+| where Log_s contains "OutOfMemory"
+    or Log_s contains "System.OutOfMemoryException"
+    or Log_s contains "OOM"
+    or Log_s has_any ("GC", "heap", "Heap", "gen0", "gen1", "gen2", "LOH", "finaliz")
 | project TimeGenerated, Log_s
 | order by TimeGenerated desc
 | take 30
+```
+
+If OOM-related entries appear, proceed to 2.2. If not, check 2.3 for other exception types.
+
+### 2.2 Correlate Memory Growth with Restart Events
+```kql
+let memoryEvents = ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(4h)
+| where ContainerAppName_s == "ca-powergrid-meter"
+| where Log_s contains "OutOfMemory" or Log_s contains "OOM" or Log_s contains "memory"
+| summarize OOMCount = count() by bin(TimeGenerated, 5m);
+let errorEvents = ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(4h)
+| where ContainerAppName_s == "ca-powergrid-meter"
+| where Log_s contains "500" or Log_s contains "Error" or Log_s contains "Exception"
+| summarize ErrorCount = count() by bin(TimeGenerated, 5m);
+memoryEvents
+| join kind=fullouter errorEvents on TimeGenerated
+| project TimeGenerated, OOMCount = coalesce(OOMCount, 0), ErrorCount = coalesce(ErrorCount, 0)
+| order by TimeGenerated asc
 ```
 
 ### 2.3 .NET Exception Stack Traces
@@ -148,26 +122,27 @@ ContainerAppConsoleLogs_CL
 ContainerAppConsoleLogs_CL
 | where TimeGenerated > ago(2h)
 | where ContainerAppName_s == "ca-powergrid-meter"
-| where Log_s contains "Exception" or Log_s contains "StackTrace" or Log_s contains "at "
+| where Log_s contains "Exception" or Log_s contains "StackTrace" or Log_s contains "at " or Log_s contains "Unhandled"
 | project TimeGenerated, Log_s
 | order by TimeGenerated desc
-| take 30
+| take 50
 ```
 
-### 2.4 App Insights Exception Details
-```kql
-exceptions
-| where timestamp > ago(2h)
-| where cloud_RoleName contains "meter"
-| where type contains "OutOfMemory" or type contains "Memory"
-| summarize Count = count(), FirstSeen = min(timestamp), LastSeen = max(timestamp)
-by type, problemId, outerMessage
-| order by Count desc
-```
+Read the stack trace: what exception type, what class/method, what line? This tells you whether it's a memory issue, a dependency failure, or a code bug.
 
-### 2.5 Container Resource Configuration
+### 2.4 Check Environment Variables for Suspicious Settings
 ```bash
-# Check current CPU/Memory allocation
+az containerapp show \
+  -g <resourceGroup> \
+  -n ca-powergrid-meter \
+  --query "properties.template.containers[0].env" \
+  -o table
+```
+
+Look for any env vars that could alter memory behavior, enable debug/simulation modes, or misconfigure the runtime.
+
+### 2.5 Check Container Resource Limits
+```bash
 az containerapp show \
   -g <resourceGroup> \
   -n ca-powergrid-meter \
@@ -175,21 +150,78 @@ az containerapp show \
   -o json
 ```
 
+Is the memory limit sufficient for this workload? A limit that's too low will cause OOM kills even under normal load.
+
+### 2.6 Check for Recent Deployments
+```kql
+ContainerAppSystemLogs_CL
+| where TimeGenerated > ago(24h)
+| where ContainerAppName_s == "ca-powergrid-meter"
+| where Log_s contains "revision" or Log_s contains "Pulling" or Log_s contains "Started" or Log_s contains "created"
+| project TimeGenerated, Log_s, RevisionName_s
+| order by TimeGenerated desc
+```
+
+Did the restarts start after a deployment? Compare error onset time with deployment time.
+
+### 2.7 App Insights Exception Breakdown
+```kql
+exceptions
+| where timestamp > ago(2h)
+| where cloud_RoleName contains "meter"
+| summarize Count = count(), FirstSeen = min(timestamp), LastSeen = max(timestamp)
+by type, problemId, outerMessage
+| order by Count desc
+```
+
+### 2.8 Dependency Health (database, downstream services)
+```kql
+dependencies
+| where timestamp > ago(1h)
+| where cloud_RoleName contains "meter"
+| where success == false
+| summarize FailureCount = count() by target, type, resultCode
+| order by FailureCount desc
+```
+
 ---
 
-## Phase 3: Fix — Remove SIMULATE_OOM and Recover
+## Phase 3: ROOT CAUSE — Interpret Findings
 
-### 3.1 Remove the Environment Variable
+| Finding | Likely Root Cause | Next Step |
+|---------|-------------------|-----------|
+| Memory sawtooth pattern + OOM logs | Memory leak — code or config is causing unbounded allocation | Remove cause of leak (env var, code fix) or increase limits |
+| Memory stable but restarts still occur | Non-memory crash — check exit codes and stack traces | Read .NET exception logs |
+| Suspicious env var altering memory behavior | Environment-driven simulation/misconfiguration | Remove or correct the env var |
+| Memory usage is flat, near limit, no growth | Memory limit too low for normal workload | Increase container memory |
+| Stack trace shows dependency connection failure | Database or downstream service is down | Fix dependency, not this service |
+| Errors started at exact deployment time | Bad deployment introduced the issue | Rollback to previous revision |
+| No recent deployment, errors appear gradually | Resource exhaustion or external change | Check connection pools, dependency health |
+
+### .NET Memory Indicators
+
+| Indicator | Normal | Concerning | Critical |
+|-----------|--------|------------|----------|
+| Working Set | < 200 MB stable | 200-800 MB growing | > 800 MB / near limit |
+| GC Gen2 Collections | Infrequent | Increasing | Continuous |
+| Restart Count | 0 | 1-2 in 1h | 3+ in 1h |
+
+---
+
+## Phase 4: FIX — Apply the Appropriate Remediation
+
+Choose based on Phase 3 findings. Do NOT guess — apply the fix that matches the diagnosed root cause.
+
+### Option A: Remove a Problematic Environment Variable
 ```bash
 az containerapp update \
   -g <resourceGroup> \
   -n ca-powergrid-meter \
-  --remove-env-vars SIMULATE_OOM
+  --remove-env-vars <ENV_VAR_NAME>
 ```
 
-### 3.2 (Optional) Increase Memory Limit if Needed
+### Option B: Increase Memory Limit
 ```bash
-# Only if the service legitimately needs more memory
 az containerapp update \
   -g <resourceGroup> \
   -n ca-powergrid-meter \
@@ -197,57 +229,40 @@ az containerapp update \
   --memory 2Gi
 ```
 
-### 3.3 Force Restart if Container is Stuck
+### Option C: Rollback to Previous Revision
+Use the `deployment-rollback` skill for a safe rollback procedure.
+
+### Option D: Restart the Container
 ```bash
-# List revisions to find the active one
 az containerapp revision list \
   -g <resourceGroup> \
   -n ca-powergrid-meter \
   -o table
 
-# Restart the active revision
 az containerapp revision restart \
   -g <resourceGroup> \
   -n ca-powergrid-meter \
   --revision <active-revision-name>
 ```
 
-### 3.4 Verify the Fix
+### Verify the Fix
 ```bash
-# Wait 60 seconds for new revision to activate, then:
-
-# Check env vars are clean
-az containerapp show \
-  -g <resourceGroup> \
-  -n ca-powergrid-meter \
-  --query "properties.template.containers[0].env" \
-  -o table
-
-# Test health endpoint
+# Wait 60 seconds, then:
 curl -s -w "\nHTTP Status: %{http_code}\n" https://<meter-api-fqdn>/health
-
-# Test meters endpoint
 curl -s -w "\nHTTP Status: %{http_code}\n" https://<meter-api-fqdn>/api/meters
 ```
 
----
-
-## Phase 4: Verify — Confirm Recovery
-
-### 4.1 No More Restarts
 ```kql
+// Confirm no restarts after fix
 ContainerAppSystemLogs_CL
-| where TimeGenerated > ago(30m)
+| where TimeGenerated > ago(15m)
 | where ContainerAppName_s == "ca-powergrid-meter"
 | where Log_s contains "restart" or Log_s contains "OOMKilled" or Log_s contains "killed"
-| project TimeGenerated, Log_s
-| order by TimeGenerated desc
+| summarize Count = count()
 ```
 
-Expected: **No results** (no restarts since fix).
-
-### 4.2 Memory Stable After Fix
 ```kql
+// Confirm memory is stable
 AzureMetrics
 | where TimeGenerated > ago(30m)
 | where ResourceProvider == "MICROSOFT.APP"
@@ -257,12 +272,10 @@ AzureMetrics
 | order by TimeGenerated desc
 ```
 
-Expected: Memory should stabilize at a consistent level, not continuously growing.
-
-### 4.3 Request Success Rate
 ```kql
+// Confirm requests are succeeding
 requests
-| where timestamp > ago(30m)
+| where timestamp > ago(15m)
 | where cloud_RoleName contains "meter"
 | summarize
     Total = count(),
@@ -273,36 +286,14 @@ by bin(timestamp, 5m)
 | order by timestamp desc
 ```
 
----
-
-## .NET Memory Leak Indicators
-
-| Indicator | Normal | Concerning | Critical |
-|-----------|--------|------------|----------|
-| Working Set | < 200 MB stable | 200-800 MB growing | > 800 MB / near limit |
-| GC Gen2 Collections | Infrequent | Increasing | Continuous |
-| LOH Allocations | Minimal | Growing | Excessive |
-| Restart Count | 0 | 1-2 in 1h | 3+ in 1h |
-
----
-
-## Other Possible Issues
-
-| Symptom | Possible Cause | Investigation |
-|---------|----------------|---------------|
-| OOM kills + restarts | `SIMULATE_OOM=true` | Check env vars (this runbook) |
-| Slow responses, no OOM | Database query performance | Check Azure SQL DTU usage |
-| 500 on POST endpoints | Model validation failure | Check request payload format |
-| Connection refused | Container in restart loop | Check restart count and logs |
-| Intermittent 503 | Container restarting mid-request | OOM cycle — fix leak first |
+If errors persist after fix, re-enter Phase 2 with fresh data.
 
 ---
 
 ## Escalation
 
 Escalate if:
-- Removing `SIMULATE_OOM` does not stop the memory growth
-- Memory continues to grow even without the env var (real memory leak)
-- Increasing memory to 2 Gi is still insufficient
-- Database connectivity issues compound the problem
-- Multiple services are experiencing OOM simultaneously
+- Root cause cannot be determined from available logs and metrics
+- Memory continues to grow after removing all suspicious env vars (real application memory leak)
+- The issue is in an external dependency (database, networking) outside your control
+- Multiple services are experiencing restarts simultaneously
