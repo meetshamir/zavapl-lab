@@ -4,11 +4,6 @@ metadata:
   kind: Skill
 name: meter-api-diagnosis
 description: "Diagnose and fix meter-api issues including OOM kills, memory leaks, and .NET container restarts. Use when meter-api health degrades or containers restart repeatedly."
-tools:
-  - CreateServiceNowIncident
-  - UpdateServiceNowWorkNotes
-  - ResolveServiceNowIncident
-  - LookupServiceNowIncident
 ---
 
 # meter-api-diagnosis

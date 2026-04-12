@@ -4,11 +4,6 @@ metadata:
   kind: Skill
 name: outage-api-diagnosis
 description: "Diagnose and fix outage-api failures including HTTP 500/503 errors, SCADA enrichment crashes, and FORCE_ERROR issues. Use when outage-api health checks fail or /outages endpoint returns errors."
-tools:
-  - CreateServiceNowIncident
-  - UpdateServiceNowWorkNotes
-  - ResolveServiceNowIncident
-  - LookupServiceNowIncident
 ---
 
 # outage-api-diagnosis
