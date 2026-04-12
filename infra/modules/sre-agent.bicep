@@ -1,4 +1,4 @@
-// ── SRE Agent with User-Assigned Managed Identity ──
+// ── SRE Agents: Ops + IT Support ──
 // Based on microsoft/sre-agent/labs/starter-lab/infra/modules/sre-agent.bicep
 
 param location string
@@ -11,7 +11,8 @@ param appInsightsAppId string
 param appInsightsConnectionString string
 param appInsightsId string
 
-var agentName = 'sre-${workloadName}'
+var agentName = 'sre-zavapower-ops'
+var itSupportAgentName = 'sre-zavapower-itsupport'
 var sreAgentAdminRoleId = 'e79298df-d852-4c6d-84f9-5d13249d1e55'
 
 // ── RBAC: Reader on target resource group ──
@@ -96,7 +97,7 @@ resource sreAgent 'Microsoft.App/agents@2025-05-01-preview' = {
   ]
 }
 
-// ── Assign SRE Agent Administrator to deployer ──
+// ── Assign SRE Agent Administrator to deployer (ops) ──
 resource sreAgentAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(sreAgent.id, deployer().objectId, sreAgentAdminRoleId)
   scope: sreAgent
@@ -107,6 +108,61 @@ resource sreAgentAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@20
   }
 }
 
+// ── IT Support Agent (ServiceNow native) ──
+#disable-next-line BCP081
+resource itSupportAgent 'Microsoft.App/agents@2025-05-01-preview' = {
+  name: itSupportAgentName
+  location: location
+  tags: union(tags, {
+    'hidden-link: /app-insights-resource-id': appInsightsId
+    role: 'it-support'
+  })
+  identity: {
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${identityId}': {}
+    }
+  }
+  properties: {
+    knowledgeGraphConfiguration: {
+      managedResources: [
+        resourceGroup().id
+      ]
+      identity: identityId
+    }
+    actionConfiguration: {
+      mode: 'Review'
+      identity: identityId
+      accessLevel: 'Low'
+    }
+    mcpServers: []
+    logConfiguration: {
+      applicationInsightsConfiguration: {
+        appId: appInsightsAppId
+        connectionString: appInsightsConnectionString
+      }
+    }
+  }
+  dependsOn: [
+    readerRole
+    monitoringReaderRole
+    logAnalyticsReaderRole
+  ]
+}
+
+// ── Assign SRE Agent Administrator to deployer (IT support) ──
+resource itSupportAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(itSupportAgent.id, deployer().objectId, sreAgentAdminRoleId)
+  scope: itSupportAgent
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', sreAgentAdminRoleId)
+    principalId: deployer().objectId
+    principalType: 'User'
+  }
+}
+
 output agentName string = sreAgent.name
 output agentId string = sreAgent.id
+output itSupportAgentName string = itSupportAgent.name
+output itSupportAgentId string = itSupportAgent.id
 output agentPortalUrl string = 'https://sre.azure.com'

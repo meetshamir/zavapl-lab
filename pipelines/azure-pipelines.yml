@@ -37,6 +37,7 @@ parameters:
       - perf
       - config
       - all
+      - build-failure
   - name: services
     displayName: 'Services to deploy (comma-separated, or "all")'
     type: string
@@ -71,6 +72,13 @@ stages:
                 if [ "$SCENARIO" = "crash" ] || [ "$SCENARIO" = "all" ]; then
                   echo "⚠️  Building outage-api with SCADA enrichment bug (bugs/crash/app.py)"
                   cp bugs/crash/app.py src/outage-api/app.py
+                fi
+
+                # If build-failure scenario, swap in broken Flask 3 code
+                if [ "$SCENARIO" = "build-failure" ]; then
+                  echo "⚠️  Building outage-api with Flask 3 import bug (bugs/build-failure/)"
+                  cp bugs/build-failure/app.py src/outage-api/app.py
+                  cp bugs/build-failure/requirements.txt src/outage-api/requirements.txt
                 fi
 
                 az acr build --registry $(acrName) \
