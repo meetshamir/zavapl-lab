@@ -1,95 +1,46 @@
 # ─────────────────────────────────────────────────────────────
-# ServiceNow MCP Connector — Configuration for SRE Agent
+# ServiceNow Integration — Using Native SRE Agent Tools
 # ─────────────────────────────────────────────────────────────
 #
-# This connects SRE Agent to ServiceNow for creating, updating,
-# and resolving incidents with a full audit trail.
+# SRE Agent has BUILT-IN ServiceNow tools when you connect
+# ServiceNow as the Incident Platform. No MCP needed.
 #
-# WHY MCP (not Incident Platform)?
-#   - Incident Platform = inbound only (SNOW → Agent)
-#   - MCP connector = the agent can CREATE and UPDATE tickets
-#   - Use Azure Monitor alerts to TRIGGER investigations
-#   - Use ServiceNow MCP to DOCUMENT findings in SNOW tickets
+# Native tools available automatically:
+#   - GetServiceNowIncident (requires sys_id)
+#   - PostServiceNowDiscussionEntry (add work notes)
+#   - AcknowledgeServiceNowIncident
+#   - ResolveServiceNowIncident
+#
+# Custom Python tool needed (see LookupServiceNowIncident below):
+#   - LookupServiceNowIncident (translates INC number → sys_id)
 #
 # SETUP:
-#   1. Get a free ServiceNow Developer Instance:
-#      https://developer.servicenow.com → Request Instance
+#   1. Connect ServiceNow as Incident Platform:
+#      sre.azure.com → Agent → Builder → Incidents → Connect platform
+#      → ServiceNow → Enter instance URL + credentials
 #
-#   2. Note your instance URL (e.g., https://dev12345.service-now.com)
-#      and admin credentials (shown on the instance page)
+#   2. Upload the LookupServiceNowIncident Python tool:
+#      Builder → Tools → + Add tool → Python
+#      (see sre-config/tools/LookupServiceNowIncident.yaml)
 #
-#   3. In SRE Agent portal (sre.azure.com):
-#      → Select your agent (sre-powergrid)
-#      → Builder → Connectors → + Add connector
-#      → Choose "MCP Server (User provided connector)"
-#      → Connection type: Streamable-HTTP
-#      → Fill in the values below
+#   3. The native SNOW tools become available to all subagents
+#      once the Incident Platform is connected
 #
-#   4. Select tools to expose (at minimum):
-#      - create_incident
-#      - update_incident
-#      - add_work_notes
-#      - get_incident
-#      - search_incidents
-#
-#   5. Test in chat: "Create a test incident in ServiceNow"
-#
+# Instance: https://dev268981.service-now.com
 # ─────────────────────────────────────────────────────────────
 
-# Configuration to enter in the SRE Agent portal:
-
-connector_name: servicenow-mcp
-connection_type: streamable-http
-
-# Option A: Use a hosted ServiceNow MCP server (recommended)
-# ServiceNow's native MCP gateway (if available on your instance):
-url: "https://<YOUR_INSTANCE>.service-now.com/api/sn_mcp/mcp"
-
-# Option B: Use a self-hosted MCP server
-# Deploy michaelbuckner/servicenow-mcp or servicenow-mcp-server (PyPI)
-# to Azure Container Apps and point to it:
-# url: "https://your-snow-mcp-server.azurecontainerapps.io/mcp"
-
-# Authentication
-auth_method: basic  # or: bearer, oauth2
-# For basic auth:
-#   Username: admin (or your integration account)
-#   Password: <from your dev instance>
-# For OAuth 2.0 (production):
-#   Configure an OAuth app in ServiceNow:
-#     System OAuth → Application Registry → Create
-#     Grant type: Client Credentials
-#     Then use client_id + client_secret in the connector
-
-# Custom headers (if using basic auth with Streamable-HTTP):
-custom_headers:
-  Authorization: "Basic <base64(username:password)>"
-
-# ─────────────────────────────────────────────────────────────
-# Tools the agent will have access to:
-# ─────────────────────────────────────────────────────────────
+# This is NOT an MCP connector config — it documents the native
+# ServiceNow integration used in this lab.
 #
-# create_incident:
-#   Creates a new incident with short_description, description,
-#   urgency, impact, category, assignment_group, caller_id
+# The native integration:
+#   - INBOUND: Agent polls SNOW for new/updated incidents (every 60s)
+#   - OUTBOUND: Agent uses native tools to update/resolve tickets
+#   - Agent can also create discussion entries (work notes)
 #
-# update_incident:
-#   Updates fields on an existing incident by sys_id or number
-#
-# add_work_notes:
-#   Appends work notes (internal audit trail) to an incident
-#   This is what SRE Agent uses to document its investigation
-#
-# add_comment:
-#   Appends customer-visible comments to an incident
-#
-# get_incident:
-#   Retrieves incident details by number (e.g., INC0010001)
-#
-# resolve_incident:
-#   Sets incident state to Resolved with resolution notes
-#
-# search_incidents:
-#   Searches incidents by query (e.g., state=active)
-# ─────────────────────────────────────────────────────────────
+# Combined with Azure Monitor alerts:
+#   - Monitor alert → Response Plan triggers investigation
+#   - Agent creates SNOW incident via LookupServiceNowIncident
+#     (or SNOW incident already exists from monitoring webhook)
+#   - Agent documents investigation in SNOW discussion entries
+#   - Agent resolves SNOW incident when fix is validated
 

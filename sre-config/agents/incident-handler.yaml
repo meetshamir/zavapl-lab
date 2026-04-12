@@ -41,4 +41,7 @@ tools:
   - log-analytics
   - app-insights
   - devops
-  - servicenow-mcp
+  - CreateServiceNowIncident
+  - UpdateServiceNowWorkNotes
+  - ResolveServiceNowIncident
+  - LookupServiceNowIncident
