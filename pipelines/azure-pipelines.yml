@@ -1,9 +1,23 @@
 # ═══════════════════════════════════════════════════════════════
 # Zava Power Limited — Build & Deploy Pipeline
 # ═══════════════════════════════════════════════════════════════
-# This pipeline builds container images and deploys to Azure
-# Container Apps. Use force_failure to simulate a bad deployment
-# that SRE Agent can detect, investigate, and rollback.
+# Builds container images and deploys to Azure Container Apps.
+#
+# Failure Scenarios (select via parameter):
+#   none    — Normal healthy deployment
+#   crash   — Deploys outage-api with FORCE_ERROR=true → 503s
+#   perf    — Deploys grid-status-api with SIMULATE_DELAY_MS=5000
+#   config  — Deploys notification-svc WITHOUT REQUIRED_CONFIG → crash loop
+#   all     — Injects all three failures simultaneously
+#
+# End-to-end demo flow:
+#   1. Run this pipeline with failure_scenario=crash
+#   2. outage-api returns 503 → Azure Monitor alert fires
+#   3. SRE Agent investigates → correlates with this ADO pipeline run
+#   4. SRE Agent creates a fix PR in ADO repo
+#   5. PR triggers the "PowerGrid-BuildTest" (CI) pipeline
+#   6. CI passes → merge PR → this pipeline re-runs (clean deploy)
+#   7. Services healthy → SRE Agent confirms resolution
 
 trigger:
   branches:
@@ -16,10 +30,16 @@ trigger:
 pr: none
 
 parameters:
-  - name: force_failure
-    displayName: 'Simulate bad deployment (inject FORCE_ERROR)'
-    type: boolean
-    default: false
+  - name: failure_scenario
+    displayName: 'Failure scenario to simulate'
+    type: string
+    default: 'none'
+    values:
+      - none
+      - crash
+      - perf
+      - config
+      - all
   - name: services
     displayName: 'Services to deploy (comma-separated, or "all")'
     type: string
@@ -138,11 +158,11 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      FORCE_ERROR="${{ parameters.force_failure }}"
-                      echo "Deploying outage-api (force_failure=$FORCE_ERROR)..."
+                      SCENARIO="${{ parameters.failure_scenario }}"
+                      echo "Deploying outage-api (scenario=$SCENARIO)..."
 
-                      if [ "$FORCE_ERROR" = "True" ]; then
-                        echo "⚠️  INJECTING FAILURE: Setting FORCE_ERROR=true"
+                      if [ "$SCENARIO" = "crash" ] || [ "$SCENARIO" = "all" ]; then
+                        echo "⚠️  INJECTING CRASH: Setting FORCE_ERROR=true"
                         az containerapp update \
                           -n ca-$(workloadName)-outage \
                           -g $(resourceGroup) \
@@ -178,11 +198,25 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      az containerapp update \
-                        -n ca-$(workloadName)-grid \
-                        -g $(resourceGroup) \
-                        --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
-                        --output none
+                      SCENARIO="${{ parameters.failure_scenario }}"
+                      echo "Deploying grid-status-api (scenario=$SCENARIO)..."
+
+                      if [ "$SCENARIO" = "perf" ] || [ "$SCENARIO" = "all" ]; then
+                        echo "⚠️  INJECTING PERF REGRESSION: Setting SIMULATE_DELAY_MS=5000"
+                        az containerapp update \
+                          -n ca-$(workloadName)-grid \
+                          -g $(resourceGroup) \
+                          --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
+                          --set-env-vars SIMULATE_DELAY_MS=5000 \
+                          --output none
+                      else
+                        az containerapp update \
+                          -n ca-$(workloadName)-grid \
+                          -g $(resourceGroup) \
+                          --image $(acrName).azurecr.io/grid-status-api:$(Build.BuildId) \
+                          --remove-env-vars SIMULATE_DELAY_MS \
+                          --output none
+                      fi
 
                 - task: AzureCLI@2
                   displayName: 'Deploy notification-svc'
@@ -191,12 +225,25 @@ stages:
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: |
-                      az containerapp update \
-                        -n ca-$(workloadName)-notify \
-                        -g $(resourceGroup) \
-                        --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
-                        --set-env-vars REQUIRED_CONFIG=enabled \
-                        --output none
+                      SCENARIO="${{ parameters.failure_scenario }}"
+                      echo "Deploying notification-svc (scenario=$SCENARIO)..."
+
+                      if [ "$SCENARIO" = "config" ] || [ "$SCENARIO" = "all" ]; then
+                        echo "⚠️  INJECTING CONFIG FAILURE: Removing REQUIRED_CONFIG"
+                        az containerapp update \
+                          -n ca-$(workloadName)-notify \
+                          -g $(resourceGroup) \
+                          --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
+                          --remove-env-vars REQUIRED_CONFIG \
+                          --output none
+                      else
+                        az containerapp update \
+                          -n ca-$(workloadName)-notify \
+                          -g $(resourceGroup) \
+                          --image $(acrName).azurecr.io/notification-svc:$(Build.BuildId) \
+                          --set-env-vars REQUIRED_CONFIG=enabled \
+                          --output none
+                      fi
 
                 - task: AzureCLI@2
                   displayName: 'Deploy portal-web'
