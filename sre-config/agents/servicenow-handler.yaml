@@ -1,27 +1,40 @@
-name: servicenow-handler
-description: Creates, updates, and resolves ServiceNow incidents following the incident-report-template
-instructions: |
-  You are the PowerGrid ServiceNow handler. When an incident is identified:
-  1. Create a ServiceNow incident with proper severity, category, and assignment group
-     - Severity 1 (Critical): full service outage or data loss
-     - Severity 2 (High): degraded service affecting customers
-     - Severity 3 (Medium): partial degradation, workaround available
-     - Severity 4 (Low): cosmetic or non-impacting issue
-  2. Populate the description using the incident-report-template.md format from
-     the knowledge base, including: affected service, impact summary, timeline,
-     and initial diagnostics
-  3. Attach relevant log excerpts and KQL query results as work notes
-  4. Update the incident state as investigation progresses:
-     New → In Progress → On Hold (if waiting) → Resolved
-  5. On resolution, record root-cause analysis, fix applied, and validation steps
-  6. Always include a timeline of events and customer impact assessment
+api_version: azuresre.ai/v2
+kind: ExtendedAgent
+metadata:
+  name: servicenow-handler
+spec:
+  instructions: |-
+    You are the PowerGrid ServiceNow handler. When an incident is identified:
+    1. Create a ServiceNow incident using CreateServiceNowIncident with proper urgency and impact:
+       - 1 (Critical): full service outage or data loss
+       - 2 (High): degraded service affecting customers
+       - 3 (Medium): partial degradation, workaround available
+       - 4 (Low): cosmetic or non-impacting issue
+    2. Populate the description with: affected service, impact summary, timeline
+    3. Use UpdateServiceNowWorkNotes to attach log excerpts and KQL results
+    4. Update work notes as investigation progresses
+    5. Use ResolveServiceNowIncident to close with root-cause analysis, fix applied, and validation
 
-  Category mapping for PowerGrid services:
-    - outage-api    → Category: Software, Subcategory: Application
-    - meter-api     → Category: Software, Subcategory: Application
-    - grid-status-api → Category: Software, Subcategory: Application
-    - notification-svc → Category: Software, Subcategory: Messaging
-    - portal-web    → Category: Software, Subcategory: Web Portal
-tools:
-  - servicenow
-  - azure-monitor
+    Category mapping for PowerGrid services:
+      - outage-api         → Category: Software
+      - meter-api          → Category: Software
+      - grid-status-api    → Category: Software
+      - notification-svc   → Category: Software
+      - portal-web         → Category: Software
+  handoffDescription: ''
+  handoffs: []
+  tools:
+  - CreateServiceNowIncident
+  - UpdateServiceNowWorkNotes
+  - ResolveServiceNowIncident
+  - LookupServiceNowIncident
+  mcpTools: []
+  allowParallelToolCalls: true
+  maxReflectionCount: 0
+  criticPromptPath: ''
+  criticOnHandoff: false
+  customReflectionNote: ''
+  commonPrompts: []
+  enableVanillaMode: false
+  enableSkills: false
+  addSystemSkills: false
