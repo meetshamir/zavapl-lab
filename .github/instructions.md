@@ -1,7 +1,7 @@
 # SRECTL - SRE Agent CLI Instructions
 
 This file contains comprehensive documentation for all SRECTL commands and their usage.
-Generated on: 2026-04-12 14:30:19 UTC
+Generated on: 2026-04-12 18:47:59 UTC
 
 ## Table of Contents
 
