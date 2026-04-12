@@ -4,6 +4,11 @@ metadata:
   kind: Skill
 name: grid-status-diagnosis
 description: "Diagnose and fix grid-status-api performance regressions including high latency, slow /regions responses, and Node.js event loop blocking. Use when response times exceed 1 second."
+tools:
+  - CreateServiceNowIncident
+  - UpdateServiceNowWorkNotes
+  - ResolveServiceNowIncident
+  - LookupServiceNowIncident
 ---
 
 # grid-status-diagnosis

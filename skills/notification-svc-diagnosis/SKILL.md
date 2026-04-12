@@ -4,6 +4,11 @@ metadata:
   kind: Skill
 name: notification-svc-diagnosis
 description: "Diagnose and fix notification-svc failures including CrashLoopBackOff from missing REQUIRED_CONFIG and gateway timeout from wrong port configuration. Use when notification-svc containers crash or /send returns 502."
+tools:
+  - CreateServiceNowIncident
+  - UpdateServiceNowWorkNotes
+  - ResolveServiceNowIncident
+  - LookupServiceNowIncident
 ---
 
 # notification-svc-diagnosis

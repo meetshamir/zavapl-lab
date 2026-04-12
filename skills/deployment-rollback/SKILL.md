@@ -4,6 +4,11 @@ metadata:
   kind: Skill
 name: deployment-rollback
 description: "Execute safe rollback of Azure Container Apps to a previous healthy revision. Use after identifying a bad deployment as root cause. Includes pre-rollback safety checks and validation steps."
+tools:
+  - CreateServiceNowIncident
+  - UpdateServiceNowWorkNotes
+  - ResolveServiceNowIncident
+  - LookupServiceNowIncident
 ---
 
 # deployment-rollback
