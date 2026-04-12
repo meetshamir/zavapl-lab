@@ -53,5 +53,6 @@ resource grafanaMonitoringReader 'Microsoft.Authorization/roleAssignments@2022-0
 output logAnalyticsWorkspaceId string = logAnalytics.id
 output logAnalyticsWorkspaceName string = logAnalytics.name
 output appInsightsId string = appInsights.id
+output appInsightsAppId string = appInsights.properties.AppId
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output grafanaEndpoint string = grafana.properties.endpoint

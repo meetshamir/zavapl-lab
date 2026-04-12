@@ -21,9 +21,6 @@ param deployArcVm bool = false
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
-@description('GitHub username for SRE Agent code integration (optional)')
-param githubUser string = ''
-
 var resourceGroupName = 'rg-${workloadName}'
 var tags = {
   project: 'ppl-zeroops-lab'
@@ -41,6 +38,17 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 // ── Observability (Log Analytics + App Insights + Grafana) ────
 module observability 'modules/observability.bicep' = {
   name: 'observability'
+  scope: rg
+  params: {
+    location: location
+    workloadName: workloadName
+    tags: tags
+  }
+}
+
+// ── SRE Agent Identity ────────────────────────────────────────
+module sreIdentity 'modules/sre-identity.bicep' = {
+  name: 'sre-identity'
   scope: rg
   params: {
     location: location
@@ -109,6 +117,11 @@ module sreAgent 'modules/sre-agent.bicep' = {
     workloadName: workloadName
     tags: tags
     targetResourceGroupName: resourceGroupName
+    identityId: sreIdentity.outputs.identityId
+    identityPrincipalId: sreIdentity.outputs.identityPrincipalId
+    appInsightsAppId: observability.outputs.appInsightsAppId
+    appInsightsConnectionString: observability.outputs.appInsightsConnectionString
+    appInsightsId: observability.outputs.appInsightsId
   }
 }
 
@@ -129,5 +142,6 @@ output resourceGroupName string = rg.name
 output logAnalyticsWorkspaceId string = observability.outputs.logAnalyticsWorkspaceId
 output appInsightsConnectionString string = observability.outputs.appInsightsConnectionString
 output containerRegistryName string = acr.outputs.registryName
-output portalUrl string = computePlatform == 'aca' ? containerApps.outputs.portalUrl : ''
+output portalUrl string = computePlatform == 'aca' && containerApps != null ? containerApps.outputs.portalUrl : ''
 output sreAgentName string = sreAgent.outputs.agentName
+output sreAgentPortalUrl string = sreAgent.outputs.agentPortalUrl

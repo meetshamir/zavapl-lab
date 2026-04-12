@@ -5,4 +5,3 @@ param workloadName = readEnvironmentVariable('POWERGRID_WORKLOAD_NAME', 'powergr
 param computePlatform = readEnvironmentVariable('COMPUTE_PLATFORM', 'aca')
 param deployArcVm = bool(readEnvironmentVariable('DEPLOY_ARC_VM', 'false'))
 param imageTag = readEnvironmentVariable('IMAGE_TAG', 'latest')
-param githubUser = readEnvironmentVariable('GITHUB_USER', '')

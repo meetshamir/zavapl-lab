@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN chmod -R +x node_modules/.bin && npx vite build
 
 # ── Production stage ─────────────────────────────────────
 FROM nginx:alpine

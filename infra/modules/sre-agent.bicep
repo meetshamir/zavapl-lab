@@ -1,22 +1,24 @@
 // ── SRE Agent with User-Assigned Managed Identity ──
+// Based on microsoft/sre-agent/labs/starter-lab/infra/modules/sre-agent.bicep
 
 param location string
 param workloadName string
 param tags object
 param targetResourceGroupName string
+param identityId string
+param identityPrincipalId string
+param appInsightsAppId string
+param appInsightsConnectionString string
+param appInsightsId string
 
-// ── Managed Identity for SRE Agent ──
-resource sreIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-${workloadName}-sre'
-  location: location
-  tags: tags
-}
+var agentName = 'sre-${workloadName}'
+var sreAgentAdminRoleId = 'e79298df-d852-4c6d-84f9-5d13249d1e55'
 
 // ── RBAC: Reader on target resource group ──
 resource readerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(sreIdentity.id, targetResourceGroupName, 'Reader')
+  name: guid(identityId, targetResourceGroupName, 'Reader')
   properties: {
-    principalId: sreIdentity.properties.principalId
+    principalId: identityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')
   }
@@ -24,9 +26,9 @@ resource readerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // ── RBAC: Monitoring Reader ──
 resource monitoringReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(sreIdentity.id, targetResourceGroupName, 'Monitoring Reader')
+  name: guid(identityId, targetResourceGroupName, 'Monitoring Reader')
   properties: {
-    principalId: sreIdentity.properties.principalId
+    principalId: identityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '43d0d8ad-25c7-4714-9337-8ba259a9fe05')
   }
@@ -34,24 +36,77 @@ resource monitoringReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-0
 
 // ── RBAC: Log Analytics Reader ──
 resource logAnalyticsReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(sreIdentity.id, targetResourceGroupName, 'Log Analytics Reader')
+  name: guid(identityId, targetResourceGroupName, 'Log Analytics Reader')
   properties: {
-    principalId: sreIdentity.properties.principalId
+    principalId: identityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '73c42c96-874c-492b-b04d-ab87d138a893')
   }
 }
 
-// ── RBAC: Container App Contributor (for remediation) ──
-resource containerAppContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(sreIdentity.id, targetResourceGroupName, 'Container App Contributor')
+// ── RBAC: Website Contributor (for Container App remediation) ──
+resource websiteContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(identityId, targetResourceGroupName, 'Website Contributor')
   properties: {
-    principalId: sreIdentity.properties.principalId
+    principalId: identityPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b2e6d14c-4a46-4520-8e5a-287fbb6eb49c')
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'de139f84-1756-47ae-9be6-808fbbe84772')
   }
 }
 
-output agentName string = 'sre-${workloadName}'
-output agentIdentityId string = sreIdentity.id
-output agentIdentityPrincipalId string = sreIdentity.properties.principalId
+// ── SRE Agent Resource ──
+#disable-next-line BCP081
+resource sreAgent 'Microsoft.App/agents@2025-05-01-preview' = {
+  name: agentName
+  location: location
+  tags: union(tags, {
+    'hidden-link: /app-insights-resource-id': appInsightsId
+  })
+  identity: {
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${identityId}': {}
+    }
+  }
+  properties: {
+    knowledgeGraphConfiguration: {
+      managedResources: [
+        resourceGroup().id
+      ]
+      identity: identityId
+    }
+    actionConfiguration: {
+      mode: 'Review'
+      identity: identityId
+      accessLevel: 'Low'
+    }
+    mcpServers: []
+    logConfiguration: {
+      applicationInsightsConfiguration: {
+        appId: appInsightsAppId
+        connectionString: appInsightsConnectionString
+      }
+    }
+  }
+  dependsOn: [
+    readerRole
+    monitoringReaderRole
+    logAnalyticsReaderRole
+    websiteContributorRole
+  ]
+}
+
+// ── Assign SRE Agent Administrator to deployer ──
+resource sreAgentAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(sreAgent.id, deployer().objectId, sreAgentAdminRoleId)
+  scope: sreAgent
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', sreAgentAdminRoleId)
+    principalId: deployer().objectId
+    principalType: 'User'
+  }
+}
+
+output agentName string = sreAgent.name
+output agentId string = sreAgent.id
+output agentPortalUrl string = 'https://sre.azure.com'
