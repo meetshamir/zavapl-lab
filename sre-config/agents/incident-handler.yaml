@@ -54,5 +54,5 @@ spec:
   customReflectionNote: ''
   commonPrompts: []
   enableVanillaMode: false
-  enableSkills: false
-  addSystemSkills: false
+  enableSkills: true
+  addSystemSkills: true
