@@ -1,0 +1,150 @@
+# ═══════════════════════════════════════════════════════════════
+# Zava Power Limited — Build Pipeline
+# ═══════════════════════════════════════════════════════════════
+# Builds container images and pushes to ACR.
+# Triggered on push to main or manually.
+# SRE Agent tracks this as the BUILD pipeline in Release Management.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/*
+      - bugs/*
+
+pr: none
+
+parameters:
+  - name: failure_scenario
+    displayName: 'Failure scenario to inject into build'
+    type: string
+    default: 'none'
+    values:
+      - none
+      - crash
+      - perf
+      - config
+      - all
+      - build-failure
+  - name: services
+    displayName: 'Services to build (comma-separated, or "all")'
+    type: string
+    default: 'all'
+
+variables:
+  acrName: 'acrpowergrid'
+
+stages:
+  - stage: Build
+    displayName: 'Build Container Images'
+    jobs:
+      - job: BuildImages
+        displayName: 'Build & Push to ACR'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Build outage-api'
+            condition: or(contains('${{ parameters.services }}', 'all'), contains('${{ parameters.services }}', 'outage-api'))
+            inputs:
+              azureSubscription: 'zava-pl-azure'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                if [ "$SCENARIO" = "crash" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Injecting SCADA enrichment bug"
+                  cp bugs/crash/app.py src/outage-api/app.py
+                fi
+                if [ "$SCENARIO" = "build-failure" ]; then
+                  echo "⚠️  Injecting Flask 3 import bug"
+                  cp bugs/build-failure/app.py src/outage-api/app.py
+                  cp bugs/build-failure/requirements.txt src/outage-api/requirements.txt
+                fi
+
+                az acr build --registry $(acrName) \
+                  --image outage-api:$(Build.BuildId) \
+                  --image outage-api:latest \
+                  --file src/outage-api/Dockerfile \
+                  src/outage-api/ --no-logs
+
+                git checkout -- src/outage-api/ 2>/dev/null || true
+
+          - task: AzureCLI@2
+            displayName: 'Build meter-api'
+            condition: or(contains('${{ parameters.services }}', 'all'), contains('${{ parameters.services }}', 'meter-api'))
+            inputs:
+              azureSubscription: 'zava-pl-azure'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr build --registry $(acrName) \
+                  --image meter-api:$(Build.BuildId) \
+                  --image meter-api:latest \
+                  --file src/meter-api/Dockerfile \
+                  src/meter-api/ --no-logs
+
+          - task: AzureCLI@2
+            displayName: 'Build grid-status-api'
+            condition: or(contains('${{ parameters.services }}', 'all'), contains('${{ parameters.services }}', 'grid-status-api'))
+            inputs:
+              azureSubscription: 'zava-pl-azure'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                if [ "$SCENARIO" = "perf" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Injecting checksum loop bug"
+                  cp bugs/perf/server.js src/grid-status-api/server.js
+                fi
+
+                az acr build --registry $(acrName) \
+                  --image grid-status-api:$(Build.BuildId) \
+                  --image grid-status-api:latest \
+                  --file src/grid-status-api/Dockerfile \
+                  src/grid-status-api/ --no-logs
+
+                git checkout -- src/grid-status-api/ 2>/dev/null || true
+
+          - task: AzureCLI@2
+            displayName: 'Build notification-svc'
+            condition: or(contains('${{ parameters.services }}', 'all'), contains('${{ parameters.services }}', 'notification-svc'))
+            inputs:
+              azureSubscription: 'zava-pl-azure'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                SCENARIO="${{ parameters.failure_scenario }}"
+
+                if [ "$SCENARIO" = "config" ] || [ "$SCENARIO" = "all" ]; then
+                  echo "⚠️  Injecting wrong gateway port bug"
+                  cp bugs/config/main.go src/notification-svc/main.go
+                fi
+
+                az acr build --registry $(acrName) \
+                  --image notification-svc:$(Build.BuildId) \
+                  --image notification-svc:latest \
+                  --file src/notification-svc/Dockerfile \
+                  src/notification-svc/ --no-logs
+
+                git checkout -- src/notification-svc/ 2>/dev/null || true
+
+          - task: AzureCLI@2
+            displayName: 'Build portal-web'
+            condition: or(contains('${{ parameters.services }}', 'all'), contains('${{ parameters.services }}', 'portal-web'))
+            inputs:
+              azureSubscription: 'zava-pl-azure'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr build --registry $(acrName) \
+                  --image portal-web:$(Build.BuildId) \
+                  --image portal-web:latest \
+                  --file src/portal-web/Dockerfile \
+                  src/portal-web/ --no-logs
