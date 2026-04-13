@@ -13,6 +13,10 @@ parameters:
     displayName: 'Build ID to deploy (image tag)'
     type: string
     default: 'latest'
+  - name: services
+    displayName: 'Services being deployed (for SRE Agent correlation)'
+    type: string
+    default: 'all'
 
 variables:
   acrName: 'acrpowergrid'
