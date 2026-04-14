@@ -50,6 +50,9 @@ NOTIFY_URL = os.environ.get("POWERGRID_NOTIFY_URL",
     "https://ca-powergrid-notify.proudmoss-f0b5f310.eastus2.azurecontainerapps.io")
 PORTAL_URL = os.environ.get("POWERGRID_PORTAL_URL",
     "https://app-powergrid-portal.azurewebsites.net")
+SN_URL  = os.environ.get("POWERGRID_SN_URL",  "https://dev268981.service-now.com")
+SN_USER = os.environ.get("POWERGRID_SN_USER", "admin")
+SN_PASS = os.environ.get("POWERGRID_SN_PASS", "ME@6SkW2d*lc")
 
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
@@ -997,7 +1000,203 @@ def scenario_build_failure():
     ])
 
 # ═══════════════════════════════════════════════════════════
-#  SCENARIO 7 — Reset All (Healthy Baseline)
+#  SCENARIO 7 — ServiceNow Laptop Replacement (from Azure Friday)
+# ═══════════════════════════════════════════════════════════
+
+_SN_STATES = {
+    "1": ("New",         "yellow"),
+    "2": ("In Progress", "cyan"),
+    "3": ("On Hold",     "bright_yellow"),
+    "6": ("Resolved",    "green"),
+    "7": ("Closed",      "green bold"),
+}
+
+def scenario_servicenow():
+    show_backstory("🎫", "SERVICENOW — LAPTOP REPLACEMENT",
+        "Employee Shamir Abdul Aziz from the Engineering department\n"
+        "submitted a laptop replacement request. His Dell XPS 15 has\n"
+        "a failing battery (20 min life), frequent blue screens, and\n"
+        "an intermittent trackpad. Device is over 3 years old.\n\n"
+        "This ticket goes to the IT Support SRE Agent (sre-zavapower-\n"
+        "itsupport) which uses ServiceNow as its native incident platform.",
+
+        "1. We create a laptop replacement ticket in ServiceNow\n"
+        "2. SRE Agent (sre-zavapower-itsupport) polls and picks it up\n"
+        "3. Agent reads ticket → checks warranty via CheckWarranty tool\n"
+        "4. Agent fills laptop request form via Browser Operator\n"
+        "5. Agent updates and resolves the ServiceNow ticket\n"
+        "6. Agent sends confirmation email to the employee")
+
+    ticket_id = None
+    ticket_num = None
+    poll_log = []
+    timeline = EventTimeline()
+
+    def _create():
+        nonlocal ticket_id, ticket_num
+        payload = {
+            "short_description": "Laptop replacement request - Shamir Abdul Aziz",
+            "description": (
+                "Employee Shamir Abdul Aziz (saziz@microsoft.com, EMP-10042, "
+                "Engineering Department) is requesting a laptop replacement.\n\n"
+                "Current laptop: Dell XPS 15 9530\n"
+                "Serial Number: SN-2023-XPS-4471\n"
+                "Issue: Laptop battery only lasts 20 minutes, frequent blue "
+                "screens during video calls, and the trackpad is unresponsive "
+                "intermittently. Device was purchased in March 2023 and is "
+                "over 3 years old.\n\n"
+                "This laptop is critical for daily work as a Principal PM and "
+                "the issues are significantly impacting productivity.\n\n"
+                "Please process this replacement request."
+            ),
+            "urgency": "2",
+            "impact": "2",
+            "category": "Hardware",
+            "subcategory": "Laptop",
+            "caller_id": "admin",
+            "assignment_group": "IT Support",
+        }
+        try:
+            r = requests.post(
+                f"{SN_URL}/api/now/table/incident",
+                json=payload,
+                auth=(SN_USER, SN_PASS),
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                timeout=15,
+            )
+            if r.status_code in (200, 201):
+                d = r.json()["result"]
+                ticket_id = d["sys_id"]
+                ticket_num = d.get("number", "?")
+                return True
+            console.print(f"[red]  SNOW error {r.status_code}: {r.text[:200]}[/]")
+        except Exception as e:
+            console.print(f"[red]  SNOW error: {e}[/]")
+        return False
+
+    def _poll():
+        if not ticket_id:
+            return None
+        try:
+            r = requests.get(
+                f"{SN_URL}/api/now/table/incident/{ticket_id}",
+                auth=(SN_USER, SN_PASS),
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                return r.json()["result"]
+        except Exception:
+            pass
+        return None
+
+    # Create the ticket
+    console.print("[bold cyan]  ▶ Creating ServiceNow ticket...[/]")
+    if not _create():
+        console.input("[dim]  Press Enter...[/]"); return
+    console.print(f"[green]  ✓ Ticket {ticket_num} created in ServiceNow[/]")
+    console.print(f"[dim]  URL: {SN_URL}/incident.do?sys_id={ticket_id}[/]\n")
+    timeline.add(f"Ticket {ticket_num} created", "cyan")
+    timeline.add("🤖 sre-zavapower-itsupport polling for new tickets...", "yellow")
+
+    # Live poll until resolved
+    try:
+        with Live(console=console, refresh_per_second=1) as live:
+            while True:
+                key = check_key()
+                if key in (b"q", b"Q"):
+                    break
+                if key == b"n":
+                    timeline.add("⌨️ Creating new ticket...", "yellow bold")
+                    _create()
+                    if ticket_num:
+                        timeline.add(f"Ticket {ticket_num} created", "cyan")
+
+                data = _poll()
+                if data:
+                    st = data.get("state", "1")
+                    sname, scolor = _SN_STATES.get(st, (f"Unknown({st})", "dim"))
+                    
+                    # Track state changes
+                    prev_state = poll_log[-1]["state"] if poll_log else None
+                    if sname != prev_state:
+                        timeline.add(f"Ticket state → {sname}", scolor)
+                    
+                    poll_log.append({"ts": datetime.now().strftime("%H:%M:%S"),
+                                     "state": sname, "color": scolor})
+                    if len(poll_log) > 20:
+                        poll_log.pop(0)
+
+                grid = Table.grid(padding=1)
+                grid.add_column()
+                grid.add_row(Panel(
+                    "[bold cyan]🎫 SERVICENOW LAPTOP REPLACEMENT[/]\n"
+                    "[dim]q = quit   n = new ticket[/]",
+                    border_style="cyan",
+                ))
+
+                if data:
+                    st = data.get("state", "1")
+                    sname, scolor = _SN_STATES.get(st, (f"Unknown({st})", "dim"))
+                    assigned = data.get("assigned_to", "")
+                    if isinstance(assigned, dict):
+                        assigned = assigned.get("display_value", "Unassigned")
+                    assigned = assigned or "Unassigned"
+                    resolved = st in ("6", "7")
+
+                    lines = [
+                        f"  Ticket:      [bold]{ticket_num}[/]",
+                        f"  State:       [{scolor}]{sname}[/]",
+                        f"  Short Desc:  {data.get('short_description', '')[:60]}",
+                        f"  Urgency:     {data.get('urgency', '')}",
+                        f"  Assigned To: {assigned}",
+                        f"  Updated:     {data.get('sys_updated_on', '')}",
+                        f"  URL:         {SN_URL}/incident.do?sys_id={ticket_id}",
+                    ]
+                    if resolved:
+                        notes = data.get("close_notes", "") or ""
+                        if notes:
+                            lines.append(f"\n  [green]Resolution: {notes[:120]}[/]")
+
+                    grid.add_row(Panel(
+                        "\n".join(lines),
+                        border_style="green bold" if resolved else "yellow",
+                        title="[green bold]✅ RESOLVED[/]" if resolved else f"[yellow]🎫 {ticket_num}[/]",
+                    ))
+
+                    if resolved:
+                        grid.add_row(Panel(
+                            "[bold green]🎉🎉🎉  INCIDENT RESOLVED!  🎉🎉🎉[/]\n\n"
+                            "[green]The SRE Agent picked up the ServiceNow incident\n"
+                            "and resolved it automatically![/]",
+                            border_style="green bold",
+                        ))
+
+                    if poll_log:
+                        pt = Table(title="[bold]Ticket State History[/]",
+                                   box=box.ROUNDED, border_style="dim")
+                        pt.add_column("Time", width=10)
+                        pt.add_column("State", width=20)
+                        for p in poll_log[-10:]:
+                            pt.add_row(p["ts"], f"[{p['color']}]{p['state']}[/]")
+                        grid.add_row(pt)
+                else:
+                    grid.add_row(Panel(
+                        "[dim]Waiting for ServiceNow response...[/]",
+                        border_style="dim",
+                    ))
+
+                grid.add_row(Text(
+                    "  🤖 it-support-handler → sre.azure.com → sre-zavapower-itsupport",
+                    style="dim"))
+                grid.add_row(timeline.render())
+                live.update(grid)
+                time.sleep(3)
+    except KeyboardInterrupt:
+        pass
+
+# ═══════════════════════════════════════════════════════════
+#  SCENARIO 8 — Reset All (Healthy Baseline)
 # ═══════════════════════════════════════════════════════════
 def scenario_reset():
     console.clear()
@@ -1081,7 +1280,8 @@ MENU_ITEMS = """
   [bold cyan]4.[/]  💾  Disk Pressure (VM Alert)
   [bold cyan]5.[/]  📈  Organic Load Spike (No Bug)
   [bold cyan]6.[/]  🔨  Pipeline Build Failure
-  [bold cyan]7.[/]  🧹  Reset All (Healthy Baseline)
+  [bold cyan]7.[/]  🎫  ServiceNow Laptop Replacement
+  [bold cyan]8.[/]  🧹  Reset All (Healthy Baseline)
   [bold cyan]Q.[/]  🚪  Quit
 """
 
@@ -1102,7 +1302,7 @@ def main():
         scenarios = {
             "1": scenario_crash, "2": scenario_perf, "3": scenario_config,
             "4": scenario_disk, "5": scenario_load, "6": scenario_build_failure,
-            "7": scenario_reset,
+            "7": scenario_servicenow, "8": scenario_reset,
         }
         fn = scenarios.get(sys.argv[2])
         if fn:
@@ -1118,7 +1318,8 @@ def main():
         "4": "scenario_disk",
         "5": "scenario_load",
         "6": "scenario_build_failure",
-        "7": "scenario_reset",
+        "7": "scenario_servicenow",
+        "8": "scenario_reset",
     }
     scenario_names = {
         "1": "Bad Deployment — App Crash",
@@ -1127,12 +1328,13 @@ def main():
         "4": "Disk Pressure (VM)",
         "5": "Organic Load Spike",
         "6": "Pipeline Build Failure",
-        "7": "Reset All",
+        "7": "ServiceNow Laptop Replacement",
+        "8": "Reset All",
     }
     while True:
         show_menu()
         choice = console.input(
-            "[bold cyan]  Select scenario (1-7, Q): [/]").strip().lower()
+            "[bold cyan]  Select scenario (1-8, Q): [/]").strip().lower()
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
