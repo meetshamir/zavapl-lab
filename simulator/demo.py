@@ -995,14 +995,37 @@ def show_menu():
 
 # ── Main ────────────────────────────────────────────────────
 def main():
+    # If launched with --scenario, run that scenario directly (used by new-window launch)
+    if len(sys.argv) >= 3 and sys.argv[1] == "--scenario":
+        scenarios = {
+            "1": scenario_crash, "2": scenario_perf, "3": scenario_config,
+            "4": scenario_disk, "5": scenario_load, "6": scenario_build_failure,
+            "7": scenario_reset,
+        }
+        fn = scenarios.get(sys.argv[2])
+        if fn:
+            fn()
+            console.input("\n[dim]  Press Enter to close this window...[/]")
+        return
+
+    # Main menu — launches scenarios in new terminal windows
     scenarios = {
-        "1": scenario_crash,
-        "2": scenario_perf,
-        "3": scenario_config,
-        "4": scenario_disk,
-        "5": scenario_load,
-        "6": scenario_build_failure,
-        "7": scenario_reset,
+        "1": "scenario_crash",
+        "2": "scenario_perf",
+        "3": "scenario_config",
+        "4": "scenario_disk",
+        "5": "scenario_load",
+        "6": "scenario_build_failure",
+        "7": "scenario_reset",
+    }
+    scenario_names = {
+        "1": "Bad Deployment — App Crash",
+        "2": "Bad Deployment — Perf Regression",
+        "3": "Bad Deployment — Config Error",
+        "4": "Disk Pressure (VM)",
+        "5": "Organic Load Spike",
+        "6": "Pipeline Build Failure",
+        "7": "Reset All",
     }
     while True:
         show_menu()
@@ -1011,9 +1034,15 @@ def main():
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
-        fn = scenarios.get(choice)
-        if fn:
-            fn()
+        if choice in scenarios:
+            name = scenario_names[choice]
+            console.print(f"[bold cyan]  Opening '{name}' in new window...[/]")
+            script_path = os.path.abspath(__file__)
+            subprocess.Popen(
+                f'start "PowerGrid — {name}" cmd /k python "{script_path}" --scenario {choice}',
+                shell=True
+            )
+            time.sleep(1)
         else:
             console.print("[red]  Invalid choice.[/]")
             time.sleep(1)
