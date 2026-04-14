@@ -5,6 +5,7 @@
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
+builder.Services.AddApplicationInsightsTelemetry();
 
 var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILogger<Program>>();

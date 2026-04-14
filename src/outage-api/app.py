@@ -30,21 +30,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Optional Application Insights integration
+# Application Insights via OpenTelemetry
 _ai_connection = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _ai_connection:
     try:
-        from opencensus.ext.azure.trace_exporter import AzureExporter
-        from opencensus.trace.tracer import Tracer
-
-        _exporter = AzureExporter(connection_string=_ai_connection)
-        _tracer = Tracer(exporter=_exporter)
-        logger.info("Application Insights telemetry enabled")
+        from azure.monitor.opentelemetry import configure_azure_monitor
+        configure_azure_monitor(connection_string=_ai_connection)
+        logger.info("Application Insights telemetry enabled (OpenTelemetry)")
     except ImportError:
-        logger.warning(
-            "opencensus-ext-azure not installed — "
-            "Application Insights telemetry disabled"
-        )
+        logger.warning("azure-monitor-opentelemetry not installed — telemetry disabled")
 
 # ---------------------------------------------------------------------------
 # Sample outage data

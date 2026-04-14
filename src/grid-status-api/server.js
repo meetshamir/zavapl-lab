@@ -2,11 +2,18 @@
 //
 // Simulates Zava Power's internal grid management status system, providing
 // real-time region status, capacity summaries, and grid alerts.
-// Used as a target microservice for ZeroOps observability and
-// deployment-automation demos.
 //
 // Set SIMULATE_DELAY_MS to inject artificial latency on all endpoints
-// (models a bad deployment with a sleep/latency regression).
+
+// App Insights MUST be loaded before anything else
+const aiKey = process.env.APPLICATIONINSIGHTS_CONNECTION_STRING;
+if (aiKey) {
+  const { useAzureMonitor } = require("applicationinsights");
+  useAzureMonitor({
+    azureMonitorExporterOptions: { connectionString: aiKey },
+  });
+  console.log("Application Insights enabled (v3)");
+}
 
 const express = require("express");
 

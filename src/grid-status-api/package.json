@@ -7,6 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "applicationinsights": "^3.0.0",
     "express": "^4.21.2"
   }
 }
