@@ -219,28 +219,99 @@ def run_build_release(failure_scenario, services):
     console.print("[green]  ✓ Release succeeded![/]\n")
     return True
 
+# ── Alert Polling Helper ────────────────────────────────────
+def poll_alert(alert_name_contains, since_time):
+    """Check if an Azure Monitor alert matching the name has fired since since_time.
+    Returns (fired: bool, alert_time: str or None)."""
+    try:
+        result = subprocess.run(
+            'az rest --method GET --url "https://management.azure.com/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup=rg-powergrid" -o json',
+            shell=True, timeout=15, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            import json as _json
+            alerts = _json.loads(result.stdout)
+            for a in alerts.get("value", []):
+                props = a.get("properties", {}).get("essentials", {})
+                rule = props.get("alertRule", "")
+                if alert_name_contains not in rule:
+                    continue
+                if props.get("monitorCondition") != "Fired":
+                    continue
+                alert_time = props.get("startDateTime", "")
+                if alert_time > since_time:
+                    return True, alert_time
+    except Exception:
+        pass
+    return False, None
+
+def poll_agent_thread(keyword, since_time):
+    """Check if SRE Agent has a thread matching keyword created since since_time.
+    Returns (found: bool, thread_title: str or None)."""
+    try:
+        result = subprocess.run(
+            'srectl thread list --quiet',
+            shell=True, timeout=10, capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            if keyword.lower() in line.lower() and since_time[:10] in line:
+                return True, line.strip()
+    except Exception:
+        pass
+    return False, None
+
 # ── Health Monitoring (Phase 3) ─────────────────────────────
 def monitor_health(url, path, service_name, agent_name,
-                   healthy_fn=None, ok_label="HEALTHY", bad_label="UNHEALTHY"):
-    """Live health monitor. Runs until service recovers or user presses q.
-    Recovery requires RECOVERY_THRESHOLD consecutive healthy samples."""
+                   healthy_fn=None, ok_label="HEALTHY", bad_label="UNHEALTHY",
+                   alert_name=None, trigger_type="release"):
+    """Live health monitor with alert + agent tracking.
+    
+    alert_name: if set, polls Azure Monitor for this alert (e.g. "http-5xx")
+    trigger_type: "release" (deployment scenarios) or "alert" (organic issues)
+    """
     if healthy_fn is None:
         healthy_fn = lambda code, ms: code == 200
 
+    sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
-    timeline.add(f"Monitoring {service_name}", "cyan")
-    timeline.add(f"🤖 {agent_name} is investigating...", "yellow")
+    
+    if trigger_type == "release":
+        timeline.add(f"⚡ Release trigger fired → {agent_name} investigating", "yellow bold")
+    else:
+        timeline.add(f"Monitoring {service_name} — waiting for alert", "cyan")
 
     checks = []
     had_unhealthy = False
     consecutive_ok = 0
     recovered = False
+    alert_fired = (trigger_type == "release")  # release trigger = already triggered
+    agent_started = (trigger_type == "release")
+    last_alert_poll = datetime.min
+    last_agent_poll = datetime.min
 
     with Live(console=console, refresh_per_second=2) as live:
         while not recovered:
             key = check_key()
             if key in (b"q", b"Q"):
                 return False
+
+            now = datetime.now()
+
+            # Poll for alert (if applicable and not yet fired)
+            if alert_name and not alert_fired and (now - last_alert_poll).seconds >= 10:
+                last_alert_poll = now
+                fired, _ = poll_alert(alert_name, sim_start)
+                if fired:
+                    alert_fired = True
+                    timeline.add(f"🚨 ALERT FIRED — {alert_name}", "red bold")
+
+            # Poll for agent thread
+            if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
+                last_agent_poll = now
+                found, _ = poll_agent_thread(service_name, sim_start)
+                if found:
+                    agent_started = True
+                    timeline.add(f"🤖 {agent_name} picked up — investigating", "yellow bold")
 
             code, ms = health_check(url, path)
             healthy = healthy_fn(code, ms)
@@ -269,12 +340,18 @@ def monitor_health(url, path, service_name, agent_name,
                     border_style="green bold", width=64,
                 ))
 
+            # Status line with alert + agent state
             color = "green" if healthy else "red"
             icon = "✅" if healthy else "❌"
             label = ok_label if healthy else bad_label
             grid.add_row(Text(
                 f"  {icon} {service_name}: {label} ({code} / {ms:.0f}ms)",
                 style=f"{color} bold"))
+
+            if alert_name:
+                a_status = "[green]🚨 FIRED[/]" if alert_fired else "[yellow]⏳ pending[/]"
+                ag_status = "[green]🤖 working[/]" if agent_started else "[dim]waiting[/]"
+                grid.add_row(Text(f"  Alert: {a_status}   Agent: {ag_status}"))
 
             ht = Table(box=box.ROUNDED, border_style="dim", width=64)
             ht.add_column("Time", style="dim", width=9)
@@ -326,7 +403,8 @@ def scenario_crash():
     time.sleep(1)
 
     if monitor_health(OUTAGE_API_URL, "/outages", "outage-api",
-                      "deployment-validator"):
+                      "deployment-validator",
+                      alert_name="http-5xx", trigger_type="release"):
         show_result("🎉", "SERVICE RESTORED!", [
             "SRE Agent (deployment-validator):",
             "- Created SNOW ticket INC00XXXXX",
@@ -366,7 +444,8 @@ def scenario_perf():
     if monitor_health(GRID_API_URL, "/regions", "grid-status-api",
                       "deployment-validator",
                       healthy_fn=lambda c, ms: c == 200 and ms < 1000,
-                      ok_label="FAST", bad_label="SLOW"):
+                      ok_label="FAST", bad_label="SLOW",
+                      alert_name="high-latency", trigger_type="release"):
         show_result("🎉", "PERFORMANCE RESTORED!", [
             "SRE Agent (deployment-validator):",
             "- Created SNOW ticket INC00XXXXX",
@@ -404,7 +483,8 @@ def scenario_config():
     time.sleep(1)
 
     if monitor_health(NOTIFY_URL, "/send", "notification-svc",
-                      "deployment-validator"):
+                      "deployment-validator",
+                      alert_name="http-5xx", trigger_type="release"):
         show_result("🎉", "SERVICE RESTORED!", [
             "SRE Agent (deployment-validator):",
             "- Created SNOW ticket INC00XXXXX",
