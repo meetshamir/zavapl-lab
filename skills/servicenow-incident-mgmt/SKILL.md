@@ -50,7 +50,8 @@ Use ResolveServiceNowIncident with:
 ### Looking Up Existing Incidents
 Use LookupServiceNowIncident to:
 - Check if a related incident already exists before creating a duplicate
-- Get the sys_id needed for native ServiceNow tool calls
+- Search by short description or keywords to find existing tickets
+Note: Native ServiceNow tools now accept INC numbers directly — no sys_id translation needed.
 
 # ServiceNow Incident Report Template
 
