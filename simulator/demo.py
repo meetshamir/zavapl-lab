@@ -428,7 +428,7 @@ def scenario_disk():
         "Combined with nightly SCADA backups that were never pruned,\n"
         "the 128GB OS disk is now at 94% capacity and climbing.",
 
-        "1. We run break-disk.sh to simulate disk pressure on the VM\n"
+        "1. We inject disk pressure on the VM via az vm run-command\n"
         "2. Azure Monitor fires a disk-pressure alert\n"
         "3. Alert trigger → vm-ops-agent picks up the alert\n"
         "4. Agent SSHs into the VM and investigates\n"
@@ -437,8 +437,20 @@ def scenario_disk():
 
     console.print("[bold cyan]  ▶ Simulating disk pressure...[/]")
     try:
-        subprocess.run("bash scripts/break-disk.sh", shell=True, timeout=60)
-        console.print("[green]  ✓ Disk pressure injected[/]\n")
+        # Fill the OS disk with simulated SCADA data (targets /dev/root, ~22GB)
+        subprocess.run(
+            'az vm run-command invoke --resource-group rg-powergrid '
+            '--name vm-powergrid-arc --command-id RunShellScript '
+            '--scripts "'
+            'mkdir -p /var/log/scada /var/backups/scada && '
+            'fallocate -l 10G /var/log/scada/grid-manager.log && '
+            'fallocate -l 8G /var/backups/scada/scada-full-2026-04.bak && '
+            'fallocate -l 4G /var/log/scada/core-dump-20260401.tmp && '
+            'echo DISK_FILLED && df -h /" '
+            '--output none',
+            shell=True, timeout=120
+        )
+        console.print("[green]  ✓ Disk pressure injected (OS disk at ~91%)[/]\n")
     except subprocess.TimeoutExpired:
         console.print("[red]  ✗ Script timed out[/]")
         console.input("[dim]  Press Enter...[/]"); return
@@ -619,22 +631,30 @@ def scenario_reset():
     console.print(Panel(
         "\n  Restoring all services to healthy baseline.\n"
         "  This will:\n"
-        "  - Run fix-all.sh to reset configurations\n"
-        "  - Redeploy healthy container images\n"
+        "  - Reset all Container App environment variables\n"
+        "  - Restore App Service port configuration\n"
         "  - Validate all service health endpoints\n",
         title="[bold]🧹 RESET ALL — HEALTHY BASELINE[/]",
         border_style="cyan", width=68,
     ))
     console.input("[dim]  Press Enter to proceed...[/]")
 
-    console.print("\n[bold cyan]  ▶ Running fix-all.sh...[/]")
-    try:
-        subprocess.run("bash scripts/fix-all.sh", shell=True, timeout=120)
-        console.print("[green]  ✓ fix-all.sh completed[/]\n")
-    except subprocess.TimeoutExpired:
-        console.print("[yellow]  ⚠ fix-all.sh timed out[/]\n")
-    except Exception as e:
-        console.print(f"[yellow]  ⚠ fix-all.sh: {e}[/]\n")
+    console.print("\n[bold cyan]  ▶ Resetting all services...[/]")
+    # Reset Container App env vars directly (no bash needed)
+    reset_cmds = [
+        f'az containerapp update -n ca-{WORKLOAD}-outage -g rg-{WORKLOAD} --remove-env-vars FORCE_ERROR --output none 2>nul',
+        f'az containerapp update -n ca-{WORKLOAD}-meter -g rg-{WORKLOAD} --remove-env-vars SIMULATE_OOM --output none 2>nul',
+        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --output none 2>nul',
+        f'az containerapp update -n ca-{WORKLOAD}-notify -g rg-{WORKLOAD} --set-env-vars REQUIRED_CONFIG=enabled --output none 2>nul',
+        f'az webapp config appsettings set --name app-{WORKLOAD}-portal --resource-group rg-{WORKLOAD} --settings WEBSITES_PORT=8080 --output none 2>nul',
+        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunShellScript --scripts "rm -f /var/log/scada/*.log /var/log/scada/*.tmp /var/backups/scada/*.bak 2>/dev/null; echo CLEANED" --output none 2>nul',
+    ]
+    for cmd in reset_cmds:
+        try:
+            subprocess.run(cmd, shell=True, timeout=30)
+        except Exception:
+            pass
+    console.print("[green]  ✓ All services reset[/]\n")
 
     console.print("[bold cyan]  ▶ Validating services...[/]\n")
     services = [
