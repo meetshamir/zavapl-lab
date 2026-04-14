@@ -74,6 +74,79 @@ def health_check(url, path="/health", timeout=5):
     except Exception:
         return 0, 0
 
+# ── Pre-flight Checks ───────────────────────────────────────
+def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
+    """Verify dependencies before a scenario. Returns True if all good."""
+    ok = True
+
+    # Check Azure CLI login
+    try:
+        r = subprocess.run('az account show --query name -o tsv',
+                          shell=True, capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            console.print("[red]  ✗ Not logged into Azure CLI. Run: az login[/]")
+            return False
+    except Exception:
+        console.print("[red]  ✗ Azure CLI not available[/]")
+        return False
+
+    # Check VM is running (start if not)
+    if needs_vm:
+        console.print("[dim]  Checking VM...[/]", end="")
+        try:
+            r = subprocess.run(
+                'az vm show -g rg-powergrid -n vm-powergrid-arc --show-details --query powerState -o tsv',
+                shell=True, capture_output=True, text=True, timeout=15)
+            state = r.stdout.strip()
+            if state != "VM running":
+                console.print(f" {state} — starting VM...", end="")
+                subprocess.run(
+                    'az vm start --resource-group rg-powergrid --name vm-powergrid-arc -o none',
+                    shell=True, timeout=300)
+                console.print("[green] ✓ VM started[/]")
+            else:
+                console.print("[green] ✓ running[/]")
+        except subprocess.TimeoutExpired:
+            console.print("[red] ✗ VM start timed out[/]")
+            ok = False
+        except Exception as e:
+            console.print(f"[red] ✗ VM check failed: {e}[/]")
+            ok = False
+
+    # Check ADO access
+    if needs_ado:
+        console.print("[dim]  Checking ADO...[/]", end="")
+        try:
+            r = subprocess.run(
+                f'az pipelines list --project {ADO_PROJECT} --org https://dev.azure.com/{ADO_ORG} --query "[0].name" -o tsv',
+                shell=True, capture_output=True, text=True, timeout=15)
+            if r.returncode == 0 and r.stdout.strip():
+                console.print(f"[green] ✓ {r.stdout.strip()}[/]")
+            else:
+                console.print("[red] ✗ ADO not accessible[/]")
+                ok = False
+        except Exception:
+            console.print("[red] ✗ ADO check failed[/]")
+            ok = False
+
+    # Check service health
+    if needs_services:
+        for name, url in needs_services:
+            console.print(f"[dim]  Checking {name}...[/]", end="")
+            code, ms = health_check(url)
+            if code == 200:
+                console.print(f"[green] ✓ {code} ({ms:.0f}ms)[/]")
+            else:
+                console.print(f"[red] ✗ {code or 'unreachable'}[/]")
+                ok = False
+
+    if not ok:
+        console.print("\n[red]  Pre-flight checks failed. Fix issues and retry.[/]")
+    else:
+        console.print("[green]  All checks passed.[/]")
+    console.print()
+    return ok
+
 # ── Event Timeline ──────────────────────────────────────────
 class EventTimeline:
     def __init__(self):
@@ -396,6 +469,9 @@ def scenario_crash():
         "4. Agent finds /outages returning 500 (AttributeError)\n"
         "5. Agent investigates → finds NoneType crash in SCADA code\n"
         "6. Agent rolls back → creates fix PR → documents in SNOW")
+
+    if not preflight_check(needs_ado=True, needs_services=[("outage-api", OUTAGE_API_URL)]):
+        console.input("[dim]  Press Enter...[/]"); return
 
     if not run_build_release("crash", "outage-api"):
         return
@@ -435,6 +511,9 @@ def scenario_perf():
         "4. Agent finds /regions taking >5s (was <100ms)\n"
         "5. Agent investigates → finds O(n²) checksum loop\n"
         "6. Agent rolls back → creates fix PR → documents in SNOW")
+
+    if not preflight_check(needs_ado=True, needs_services=[("grid-status-api", GRID_API_URL)]):
+        console.input("[dim]  Press Enter...[/]"); return
 
     if not run_build_release("perf", "grid-status-api"):
         return
@@ -477,6 +556,9 @@ def scenario_config():
         "5. Agent investigates → finds GATEWAY_PORT mismatch\n"
         "6. Agent rolls back → creates fix PR → documents in SNOW")
 
+    if not preflight_check(needs_ado=True):
+        console.input("[dim]  Press Enter...[/]"); return
+
     if not run_build_release("config", "notification-svc"):
         return
     console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
@@ -515,17 +597,31 @@ def scenario_disk():
         "5. Agent cleans old logs and backups\n"
         "6. Agent documents remediation in SNOW")
 
+    if not preflight_check(needs_vm=True):
+        console.input("[dim]  Press Enter...[/]"); return
+
     console.print("[bold cyan]  ▶ Simulating disk pressure on Windows VM...[/]")
     try:
-        subprocess.run(
+        result = subprocess.run(
             'az vm run-command invoke --resource-group rg-powergrid '
             '--name vm-powergrid-arc --command-id RunPowerShellScript '
             '--scripts "'
             'New-Item -ItemType Directory -Path C:\\SCADA\\Logs, C:\\SCADA\\Backups -Force | Out-Null; '
-            'fsutil file createnew C:\\SCADA\\Logs\\grid-manager.log 10737418240; '
-            'fsutil file createnew C:\\SCADA\\Backups\\scada-full-2026-04.bak 8589934592; '
-            'fsutil file createnew C:\\SCADA\\Logs\\core-dump-20260401.tmp 4294967296; '
-            'Write-Output DISK_FILLED; Get-PSDrive C | Select-Object Used,Free" '
+            'fsutil file createnew C:\\SCADA\\Logs\\grid-manager.log 53687091200; '
+            'fsutil file createnew C:\\SCADA\\Backups\\scada-full-2026-04.bak 42949672960; '
+            'fsutil file createnew C:\\SCADA\\Logs\\audit-2026-Q1.log 10737418240; '
+            'fsutil file createnew C:\\SCADA\\Backups\\meter-data.bak 5368709120; '
+            'Write-Output DISK_FILLED" '
+            '--query "value[0].message" -o tsv',
+            shell=True, timeout=180, capture_output=True, text=True
+        )
+        if "DISK_FILLED" in result.stdout or "createnew" in result.stdout.lower():
+            console.print("[green]  ✓ Disk pressure injected (~110GB of SCADA data)[/]\n")
+        elif "OperationNotAllowed" in result.stdout or "not running" in result.stdout.lower():
+            console.print("[red]  ✗ VM is not running![/]")
+            console.input("[dim]  Press Enter...[/]"); return
+        else:
+            console.print(f"[yellow]  ⚠ Unexpected result: {result.stdout[:100]}[/]\n")
             '--output none',
             shell=True, timeout=120
         )
@@ -736,6 +832,9 @@ def scenario_load():
         "4. Agent investigates — finds NO code defect\n"
         "5. Agent recommends horizontal scaling + CDN caching\n"
         "6. Agent documents the capacity event in SNOW")
+
+    if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)]):
+        console.input("[dim]  Press Enter...[/]"); return
 
     console.print("[bold cyan]  ▶ Generating load spike (10 concurrent workers)...[/]\n")
     stop_event = threading.Event()
@@ -866,6 +965,9 @@ def scenario_build_failure():
         "4. Agent reads build logs from ADO pipeline\n"
         "5. Agent identifies the flask.ext import error\n"
         "6. Agent creates fix PR and notifies the developer")
+
+    if not preflight_check(needs_ado=True):
+        console.input("[dim]  Press Enter...[/]"); return
 
     console.print("[bold cyan]  ▶ Triggering PowerGrid-Build (will fail)...[/]")
     build_id = run_ado_pipeline("PowerGrid-Build", {
