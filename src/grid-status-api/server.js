@@ -22,6 +22,13 @@ const PORT = parseInt(process.env.PORT, 10) || 8080;
 const SIMULATE_DELAY_MS = parseInt(process.env.SIMULATE_DELAY_MS, 10) || 0;
 
 // ---------------------------------------------------------------------------
+// Chaos mode — activated via POST /chaos/latency to simulate server-side load
+// Deactivated via DELETE /chaos/latency or auto-expires after duration
+// ---------------------------------------------------------------------------
+let chaosLatencyMs = 0;
+let chaosExpiry = 0;
+
+// ---------------------------------------------------------------------------
 // Request logging
 // ---------------------------------------------------------------------------
 app.use((req, _res, next) => {
@@ -98,6 +105,54 @@ function buildAlerts() {
     id: `ALT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Chaos latency middleware — adds delay when chaos mode is active
+// ---------------------------------------------------------------------------
+app.use((req, _res, next) => {
+  if (chaosLatencyMs > 0 && Date.now() < chaosExpiry) {
+    // CPU-burn to create real server-side latency (not just setTimeout)
+    const end = Date.now() + chaosLatencyMs;
+    while (Date.now() < end) {
+      Math.random() * Math.random();
+    }
+  } else if (chaosLatencyMs > 0 && Date.now() >= chaosExpiry) {
+    chaosLatencyMs = 0;
+    chaosExpiry = 0;
+    console.log("Chaos latency expired — back to normal");
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
+// Chaos control endpoints
+// ---------------------------------------------------------------------------
+app.use(express.json());
+
+app.post("/chaos/latency", (req, res) => {
+  const ms = parseInt(req.body.latency_ms, 10) || 2000;
+  const durationMin = parseInt(req.body.duration_min, 10) || 10;
+  chaosLatencyMs = ms;
+  chaosExpiry = Date.now() + durationMin * 60 * 1000;
+  console.log(`⚠  CHAOS: Adding ${ms}ms server-side latency for ${durationMin} min`);
+  res.json({ status: "chaos_enabled", latency_ms: ms, expires_in_min: durationMin });
+});
+
+app.delete("/chaos/latency", (_req, res) => {
+  chaosLatencyMs = 0;
+  chaosExpiry = 0;
+  console.log("✓ CHAOS: Latency removed");
+  res.json({ status: "chaos_disabled" });
+});
+
+app.get("/chaos/status", (_req, res) => {
+  const active = chaosLatencyMs > 0 && Date.now() < chaosExpiry;
+  res.json({
+    active,
+    latency_ms: active ? chaosLatencyMs : 0,
+    remaining_sec: active ? Math.round((chaosExpiry - Date.now()) / 1000) : 0,
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Endpoints

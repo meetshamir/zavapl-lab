@@ -472,7 +472,8 @@ def scenario_crash():
         "4. Agent finds /outages returning 500 (AttributeError)\n"
         "5. Agent investigates → finds NoneType crash in SCADA code\n"
         "6. Agent rolls back → creates fix PR → documents in SNOW")
-
+
+
     if not preflight_check(needs_ado=True, needs_services=[("outage-api", OUTAGE_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
@@ -825,34 +826,49 @@ def scenario_load():
         "There is NO bug — the code is correct. The infrastructure is\n"
         "simply overwhelmed by legitimate traffic at 50x normal volume.",
 
-        "1. We generate a burst of concurrent requests to grid-status-api\n"
-        "2. Response times climb as the service saturates\n"
-        "3. Azure Monitor fires high-latency alert → incident-handler\n"
-        "4. Agent investigates — finds NO code defect\n"
+        "1. We activate chaos mode on grid-status-api (server-side latency)\n"
+        "2. Response times climb above 2000ms as the service saturates\n"
+        "3. Azure Monitor fires high-latency alert (avg > 1500ms)\n"
+        "4. SRE Agent investigates — finds NO code defect\n"
         "5. Agent recommends horizontal scaling + CDN caching\n"
         "6. Agent documents the capacity event in SNOW")
-
+
+
     if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
-    console.print("[bold cyan]  ▶ Generating load spike (10 concurrent workers)...[/]\n")
+    # Activate chaos mode — inject 2500ms server-side latency for 10 minutes
+    console.print("[bold cyan]  ▶ Activating chaos mode on grid-status-api (2500ms latency)...[/]")
+    try:
+        r = requests.post(f"{GRID_API_URL}/chaos/latency",
+                          json={"latency_ms": 2500, "duration_min": 10}, timeout=15)
+        if r.status_code == 200:
+            console.print("[green]  ✓ Chaos latency active — server responses now ~2500ms[/]\n")
+        else:
+            console.print(f"[red]  ✗ Failed to activate chaos: {r.status_code}[/]")
+            console.input("[dim]  Press Enter...[/]"); return
+    except Exception as e:
+        console.print(f"[red]  ✗ Chaos endpoint error: {e}[/]")
+        console.input("[dim]  Press Enter...[/]"); return
+
+    # Generate concurrent request traffic to drive up App Insights metrics
     stop_event = threading.Event()
 
     def worker():
         while not stop_event.is_set():
             try:
-                requests.get(f"{GRID_API_URL}/regions", timeout=5)
+                requests.get(f"{GRID_API_URL}/regions", timeout=10)
             except Exception:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.5)
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(10)]
     for t in threads:
         t.start()
 
     timeline = EventTimeline()
+    timeline.add("Chaos latency activated — 2500ms server-side delay", "cyan")
     timeline.add("Load spike started — 10 concurrent workers", "cyan")
-    timeline.add("🤖 Waiting for Azure Monitor high-latency alert...", "yellow")
     checks = []
     had_slow = False
     consecutive_fast = 0
@@ -929,6 +945,11 @@ def scenario_load():
                 time.sleep(2)
     finally:
         stop_event.set()
+        # Disable chaos mode
+        try:
+            requests.delete(f"{GRID_API_URL}/chaos/latency", timeout=5)
+        except Exception:
+            pass
 
     show_result("📈", "LOAD SPIKE ANALYZED", [
         "SRE Agent (incident-handler):",
@@ -964,7 +985,8 @@ def scenario_build_failure():
         "4. Agent reads build logs from ADO pipeline\n"
         "5. Agent identifies the flask.ext import error\n"
         "6. Agent creates fix PR and notifies the developer")
-
+
+
     if not preflight_check(needs_ado=True):
         console.input("[dim]  Press Enter...[/]"); return
 
