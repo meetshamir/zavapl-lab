@@ -1,0 +1,35 @@
+{
+  "location": "eastus2",
+  "properties": {
+    "dataSources": {
+      "performanceCounters": [
+        {
+          "name": "disk-and-system",
+          "streams": ["Microsoft-Perf"],
+          "samplingFrequencyInSeconds": 10,
+          "counterSpecifiers": [
+            "\\\\LogicalDisk(*)\\\\% Free Space",
+            "\\\\LogicalDisk(*)\\\\% Used Space",
+            "\\\\LogicalDisk(*)\\\\Free Megabytes",
+            "\\\\Processor(_Total)\\\\% Processor Time",
+            "\\\\Memory\\\\% Used Memory"
+          ]
+        }
+      ]
+    },
+    "destinations": {
+      "logAnalytics": [
+        {
+          "workspaceResourceId": "/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/resourceGroups/rg-powergrid/providers/Microsoft.OperationalInsights/workspaces/law-powergrid",
+          "name": "law-powergrid"
+        }
+      ]
+    },
+    "dataFlows": [
+      {
+        "streams": ["Microsoft-Perf"],
+        "destinations": ["law-powergrid"]
+      }
+    ]
+  }
+}

@@ -458,16 +458,20 @@ def scenario_disk():
         console.print(f"[red]  ✗ Failed: {e}[/]")
         console.input("[dim]  Press Enter...[/]"); return
 
-    console.print("[bold yellow]  ⚡ Azure Monitor alert firing → vm-ops-agent investigating[/]\n")
-    time.sleep(1)
-
-    # Live monitor disk usage until agent fixes it
+    # Phase 2: Wait for Azure Monitor alert to fire
+    console.print("[bold yellow]  ⏳ Waiting for Azure Monitor disk alert to fire...[/]\n")
+    
+    sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
     timeline.add("Disk pressure injected — OS disk at ~91%", "red")
-    timeline.add("🤖 vm-ops-agent investigating...", "yellow")
+    timeline.add("⏳ Waiting for alert-powergrid-disk-pressure to fire...", "yellow")
+    
+    alert_fired = False
+    agent_started = False
     checks = []
-    was_full = True
     recovered = False
+    last_alert_poll = datetime.min
+    last_agent_poll = datetime.min
 
     with Live(console=console, refresh_per_second=1) as live:
         while not recovered:
@@ -475,7 +479,49 @@ def scenario_disk():
             if key in (b"q", b"Q"):
                 break
 
-            # Poll disk usage via az vm run-command (every 15s since it's slow)
+            now = datetime.now()
+
+            # Poll Azure Monitor for NEW disk alerts (every 10s)
+            if not alert_fired and (now - last_alert_poll).seconds >= 10:
+                last_alert_poll = now
+                try:
+                    result = subprocess.run(
+                        'az rest --method GET --url "https://management.azure.com/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup=rg-powergrid" -o json',
+                        shell=True, timeout=15, capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        import json as _json
+                        alerts = _json.loads(result.stdout)
+                        for a in alerts.get("value", []):
+                            props = a.get("properties", {}).get("essentials", {})
+                            if "disk-pressure" not in props.get("alertRule", ""):
+                                continue
+                            if props.get("monitorCondition") != "Fired":
+                                continue
+                            # Only match alerts fired AFTER we started the simulation
+                            alert_time = props.get("startDateTime", "")
+                            if alert_time > sim_start:
+                                alert_fired = True
+                                timeline.add("🚨 ALERT FIRED — alert-powergrid-disk-pressure (Sev2)", "red bold")
+                                break
+                except Exception:
+                    pass
+
+            # Poll SRE Agent threads for activity (every 10s)
+            if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
+                last_agent_poll = now
+                try:
+                    result = subprocess.run(
+                        'srectl thread list --quiet',
+                        shell=True, timeout=10, capture_output=True, text=True
+                    )
+                    if "disk-pressure" in result.stdout.lower() or "disk" in result.stdout.lower():
+                        agent_started = True
+                        timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
+                except Exception:
+                    pass
+
+            # Poll disk usage via az vm run-command (every 15s)
             disk_pct = None
             if len(checks) == 0 or (len(checks) > 0 and (datetime.now() - checks[-1].get("_poll_time", datetime.min)).seconds >= 15):
                 try:
@@ -504,7 +550,7 @@ def scenario_disk():
                     if len(checks) > 20:
                         checks.pop(0)
 
-                    if disk_pct < 50 and was_full:
+                    if disk_pct < 50:
                         recovered = True
                         timeline.add(f"🎉 DISK CLEANED! Usage dropped to {disk_pct}%", "green bold")
 
@@ -518,12 +564,19 @@ def scenario_disk():
                 border_style="cyan", width=68,
             ))
 
+            # Alert + Agent status line
             if recovered:
                 grid.add_row(Panel(
                     "[bold green]🎉🎉🎉  DISK PRESSURE RESOLVED!  🎉🎉🎉[/]\n\n"
                     "[green]The SRE Agent cleaned up the disk![/]",
                     border_style="green bold", width=68,
                 ))
+            else:
+                alert_status = "[green]🚨 FIRED[/]" if alert_fired else "[yellow]⏳ pending...[/]"
+                agent_status = "[green]🤖 investigating[/]" if agent_started else "[dim]waiting for alert[/]"
+                grid.add_row(Text(
+                    f"  Alert: {alert_status}   Agent: {agent_status}",
+                    style="bold"))
 
             # Current status
             if checks:
