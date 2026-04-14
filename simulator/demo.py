@@ -459,9 +459,116 @@ def scenario_disk():
         console.input("[dim]  Press Enter...[/]"); return
 
     console.print("[bold yellow]  ⚡ Azure Monitor alert firing → vm-ops-agent investigating[/]\n")
-    console.print("[dim]  🤖 Agent → sre.azure.com → sre-zavapower-ops[/]")
-    console.print("[dim]  Waiting for vm-ops-agent to remediate...[/]\n")
-    console.input("[dim]  Press Enter when agent has completed...[/]")
+    time.sleep(1)
+
+    # Live monitor disk usage until agent fixes it
+    timeline = EventTimeline()
+    timeline.add("Disk pressure injected — OS disk at ~91%", "red")
+    timeline.add("🤖 vm-ops-agent investigating...", "yellow")
+    checks = []
+    was_full = True
+    recovered = False
+
+    with Live(console=console, refresh_per_second=1) as live:
+        while not recovered:
+            key = check_key()
+            if key in (b"q", b"Q"):
+                break
+
+            # Poll disk usage via az vm run-command (every 15s since it's slow)
+            disk_pct = None
+            if len(checks) == 0 or (len(checks) > 0 and (datetime.now() - checks[-1].get("_poll_time", datetime.min)).seconds >= 15):
+                try:
+                    result = subprocess.run(
+                        'az vm run-command invoke --resource-group rg-powergrid '
+                        '--name vm-powergrid-arc --command-id RunShellScript '
+                        '--scripts "df / --output=pcent | tail -1 | tr -d \' %\'" '
+                        '--query "value[0].message" -o tsv',
+                        shell=True, timeout=30, capture_output=True, text=True
+                    )
+                    # Parse: "[stdout]\n85\n[stderr]\n"
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if line.isdigit():
+                            disk_pct = int(line)
+                            break
+                except Exception:
+                    pass
+
+                if disk_pct is not None:
+                    checks.append({
+                        "ts": datetime.now().strftime("%H:%M:%S"),
+                        "pct": disk_pct,
+                        "_poll_time": datetime.now(),
+                    })
+                    if len(checks) > 20:
+                        checks.pop(0)
+
+                    if disk_pct < 50 and was_full:
+                        recovered = True
+                        timeline.add(f"🎉 DISK CLEANED! Usage dropped to {disk_pct}%", "green bold")
+
+            # Build display
+            grid = Table.grid(padding=1)
+            grid.add_column()
+
+            grid.add_row(Panel(
+                "[bold cyan]💾 DISK PRESSURE MONITOR[/]  —  vm-powergrid-arc\n"
+                "[dim]q = return to menu[/]",
+                border_style="cyan", width=68,
+            ))
+
+            if recovered:
+                grid.add_row(Panel(
+                    "[bold green]🎉🎉🎉  DISK PRESSURE RESOLVED!  🎉🎉🎉[/]\n\n"
+                    "[green]The SRE Agent cleaned up the disk![/]",
+                    border_style="green bold", width=68,
+                ))
+
+            # Current status
+            if checks:
+                last = checks[-1]
+                pct = last["pct"]
+                if pct > 85:
+                    color, icon, label = "red", "🔴", "CRITICAL"
+                elif pct > 70:
+                    color, icon, label = "yellow", "🟡", "WARNING"
+                else:
+                    color, icon, label = "green", "🟢", "HEALTHY"
+                grid.add_row(Text(
+                    f"  {icon} OS Disk: {pct}% used   [{label}]",
+                    style=f"{color} bold"))
+
+                # Sparkline bar
+                bar_width = 40
+                filled = int(pct / 100 * bar_width)
+                bar = f"[{color}]{'█' * filled}{'░' * (bar_width - filled)}[/] {pct}%"
+                grid.add_row(Text(f"  {bar}"))
+
+            # History table
+            if checks:
+                dt = Table(box=box.ROUNDED, border_style="dim", width=50)
+                dt.add_column("Time", style="dim", width=9)
+                dt.add_column("Disk %", width=8, justify="right")
+                dt.add_column("Bar", width=25)
+                for c in checks[-8:]:
+                    p = c["pct"]
+                    clr = "red" if p > 85 else "yellow" if p > 70 else "green"
+                    bw = 20
+                    bf = int(p / 100 * bw)
+                    dt.add_row(
+                        c["ts"],
+                        f"[{clr}]{p}%[/]",
+                        f"[{clr}]{'█' * bf}{'░' * (bw - bf)}[/]",
+                    )
+                grid.add_row(dt)
+
+            grid.add_row(Text(
+                "  🤖 vm-ops-agent → sre.azure.com → sre-zavapower-ops",
+                style="dim"))
+            grid.add_row(timeline.render())
+            live.update(grid)
+            time.sleep(2)
 
     show_result("🎉", "DISK PRESSURE RESOLVED!", [
         "SRE Agent (vm-ops-agent):",
