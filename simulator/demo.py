@@ -622,10 +622,6 @@ def scenario_disk():
             console.input("[dim]  Press Enter...[/]"); return
         else:
             console.print(f"[yellow]  ⚠ Unexpected result: {result.stdout[:100]}[/]\n")
-            '--output none',
-            shell=True, timeout=120
-        )
-        console.print("[green]  ✓ Disk pressure injected (~22GB of SCADA data)[/]\n")
     except subprocess.TimeoutExpired:
         console.print("[red]  ✗ Script timed out[/]")
         console.input("[dim]  Press Enter...[/]"); return
