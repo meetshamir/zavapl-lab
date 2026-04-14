@@ -501,36 +501,35 @@ def scenario_config():
 # ═══════════════════════════════════════════════════════════
 def scenario_disk():
     show_backstory("💾", "DISK PRESSURE — VM ALERT",
-        "The grid management server (vm-grid-mgmt-01) runs SCADA data\n"
+        "The grid management server (gridmgmt01) runs SCADA data\n"
         "collection and stores raw telemetry locally before forwarding\n"
         "to Azure Data Explorer. Over the past week, a misconfigured\n"
-        "log rotation policy let /var/log/scada grow unchecked.\n\n"
+        "log rotation policy let C:\\SCADA\\Logs grow unchecked.\n\n"
         "Combined with nightly SCADA backups that were never pruned,\n"
-        "the 128GB OS disk is now at 94% capacity and climbing.",
+        "the C: drive is now at 90%+ capacity and climbing.",
 
         "1. We inject disk pressure on the VM via az vm run-command\n"
-        "2. Azure Monitor fires a disk-pressure alert\n"
+        "2. Azure Monitor fires a disk-pressure alert (< 15% free)\n"
         "3. Alert trigger → vm-ops-agent picks up the alert\n"
-        "4. Agent SSHs into the VM and investigates\n"
-        "5. Agent cleans old logs and backups, fixes log rotation\n"
+        "4. Agent runs commands on the VM and investigates\n"
+        "5. Agent cleans old logs and backups\n"
         "6. Agent documents remediation in SNOW")
 
-    console.print("[bold cyan]  ▶ Simulating disk pressure...[/]")
+    console.print("[bold cyan]  ▶ Simulating disk pressure on Windows VM...[/]")
     try:
-        # Fill the OS disk with simulated SCADA data (targets /dev/root, ~22GB)
         subprocess.run(
             'az vm run-command invoke --resource-group rg-powergrid '
-            '--name vm-powergrid-arc --command-id RunShellScript '
+            '--name vm-powergrid-arc --command-id RunPowerShellScript '
             '--scripts "'
-            'mkdir -p /var/log/scada /var/backups/scada && '
-            'fallocate -l 10G /var/log/scada/grid-manager.log && '
-            'fallocate -l 8G /var/backups/scada/scada-full-2026-04.bak && '
-            'fallocate -l 4G /var/log/scada/core-dump-20260401.tmp && '
-            'echo DISK_FILLED && df -h /" '
+            'New-Item -ItemType Directory -Path C:\\SCADA\\Logs, C:\\SCADA\\Backups -Force | Out-Null; '
+            'fsutil file createnew C:\\SCADA\\Logs\\grid-manager.log 10737418240; '
+            'fsutil file createnew C:\\SCADA\\Backups\\scada-full-2026-04.bak 8589934592; '
+            'fsutil file createnew C:\\SCADA\\Logs\\core-dump-20260401.tmp 4294967296; '
+            'Write-Output DISK_FILLED; Get-PSDrive C | Select-Object Used,Free" '
             '--output none',
             shell=True, timeout=120
         )
-        console.print("[green]  ✓ Disk pressure injected (OS disk at ~91%)[/]\n")
+        console.print("[green]  ✓ Disk pressure injected (~22GB of SCADA data)[/]\n")
     except subprocess.TimeoutExpired:
         console.print("[red]  ✗ Script timed out[/]")
         console.input("[dim]  Press Enter...[/]"); return
@@ -601,23 +600,28 @@ def scenario_disk():
                 except Exception:
                     pass
 
-            # Poll disk usage via az vm run-command (every 15s)
+            # Poll disk usage from Log Analytics (every 15s, uses cached Perf data)
             disk_pct = None
             if len(checks) == 0 or (len(checks) > 0 and (datetime.now() - checks[-1].get("_poll_time", datetime.min)).seconds >= 15):
                 try:
+                    wsid = subprocess.run(
+                        'az monitor log-analytics workspace show -g rg-powergrid -n law-powergrid --query customerId -o tsv',
+                        shell=True, timeout=10, capture_output=True, text=True
+                    ).stdout.strip()
                     result = subprocess.run(
-                        'az vm run-command invoke --resource-group rg-powergrid '
-                        '--name vm-powergrid-arc --command-id RunShellScript '
-                        '--scripts "df / --output=pcent | tail -1 | tr -d \' %\'" '
-                        '--query "value[0].message" -o tsv',
-                        shell=True, timeout=30, capture_output=True, text=True
+                        f'az monitor log-analytics query -w {wsid} --analytics-query '
+                        '"Perf | where Computer == \'gridmgmt01\' and ObjectName == \'LogicalDisk\' and CounterName == \'% Free Space\' and InstanceName == \'C:\' | top 1 by TimeGenerated | project CounterValue" '
+                        '-o tsv',
+                        shell=True, timeout=15, capture_output=True, text=True
                     )
-                    # Parse: "[stdout]\n85\n[stderr]\n"
                     for line in result.stdout.splitlines():
                         line = line.strip()
-                        if line.isdigit():
-                            disk_pct = int(line)
+                        try:
+                            free_pct = float(line)
+                            disk_pct = int(100 - free_pct)
                             break
+                        except ValueError:
+                            continue
                 except Exception:
                     pass
 
@@ -707,8 +711,8 @@ def scenario_disk():
         "SRE Agent (vm-ops-agent):",
         "- Detected disk at 94% via Azure Monitor alert",
         "- SSHed into vm-grid-mgmt-01",
-        "- Cleaned /var/log/scada (recovered 42GB)",
-        "- Pruned old SCADA backups (recovered 31GB)",
+        "- Cleaned C:\\SCADA\\Logs (recovered 10GB)",
+        "- Pruned old SCADA backups (recovered 8GB)",
         "- Fixed logrotate config for scada.log",
         "- Created SNOW ticket with remediation details",
         "",
@@ -918,7 +922,7 @@ def scenario_reset():
         f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --output none 2>nul',
         f'az containerapp update -n ca-{WORKLOAD}-notify -g rg-{WORKLOAD} --set-env-vars REQUIRED_CONFIG=enabled --output none 2>nul',
         f'az webapp config appsettings set --name app-{WORKLOAD}-portal --resource-group rg-{WORKLOAD} --settings WEBSITES_PORT=8080 --output none 2>nul',
-        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunShellScript --scripts "rm -f /var/log/scada/*.log /var/log/scada/*.tmp /var/backups/scada/*.bak 2>/dev/null; echo CLEANED" --output none 2>nul',
+        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunPowerShellScript --scripts "Remove-Item C:\\SCADA\\Logs\\*.log, C:\\SCADA\\Logs\\*.tmp, C:\\SCADA\\Backups\\*.bak -Force -ErrorAction SilentlyContinue; Write-Output CLEANED" --output none 2>nul',
     ]
     for cmd in reset_cmds:
         try:
