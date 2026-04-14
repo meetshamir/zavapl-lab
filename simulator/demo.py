@@ -619,7 +619,10 @@ def scenario_load():
     timeline.add("Load spike started — 10 concurrent workers", "cyan")
     timeline.add("🤖 Waiting for Azure Monitor high-latency alert...", "yellow")
     checks = []
-    max_iterations = 120  # ~4 min at 2s intervals
+    had_slow = False
+    consecutive_fast = 0
+    recovered = False
+    max_iterations = 180  # ~6 min at 2s intervals
 
     try:
         with Live(console=console, refresh_per_second=2) as live:
@@ -629,30 +632,54 @@ def scenario_load():
                     break
 
                 code, ms = health_check(GRID_API_URL, "/regions")
+                is_slow = ms > 500
                 checks.append({"ts": datetime.now().strftime("%H:%M:%S"),
-                                "code": code, "ms": ms})
+                                "code": code, "ms": ms, "slow": is_slow})
                 if len(checks) > 20:
                     checks.pop(0)
+
+                if is_slow and not had_slow:
+                    had_slow = True
+                    timeline.add(f"⚠️ High latency detected: {ms:.0f}ms", "red")
+                
+                if is_slow:
+                    consecutive_fast = 0
+                else:
+                    consecutive_fast += 1
+
+                if had_slow and consecutive_fast >= 3 and not recovered:
+                    recovered = True
+                    timeline.add("🎉 LATENCY NORMALIZED! Agent scaled the service!", "green bold")
+                    stop_event.set()  # stop the load generators
 
                 remaining = (max_iterations - i) * 2
                 grid = Table.grid(padding=1)
                 grid.add_column()
 
+                if recovered:
+                    grid.add_row(Panel(
+                        "[bold green]🎉🎉🎉  LATENCY NORMALIZED!  🎉🎉🎉[/]\n\n"
+                        "[green]Agent found no code bug — scaled the service to handle load.[/]",
+                        border_style="green bold", width=64,
+                    ))
+
                 color = "red" if ms > 2000 else "yellow" if ms > 500 else "green"
                 grid.add_row(Text(
                     f"  📈 grid-status-api: {code} / {ms:.0f}ms   "
-                    f"[auto-stop in {remaining}s]",
+                    f"[{'RECOVERED' if recovered else f'auto-stop in {remaining}s'}]",
                     style=f"{color} bold"))
 
                 ht = Table(box=box.ROUNDED, border_style="dim", width=64)
                 ht.add_column("Time", style="dim", width=9)
                 ht.add_column("Status", width=7)
                 ht.add_column("Latency", width=10, justify="right")
+                ht.add_column("", width=8, justify="center")
                 for c in checks[-8:]:
                     lc = ("red" if c["ms"] > 2000
                           else "yellow" if c["ms"] > 500 else "green")
                     ht.add_row(c["ts"], str(c["code"]),
-                               f"[{lc}]{c['ms']:.0f}ms[/]")
+                               f"[{lc}]{c['ms']:.0f}ms[/]",
+                               "[red]🐌[/]" if c["slow"] else "[green]⚡[/]")
                 grid.add_row(ht)
                 grid.add_row(Text(
                     "  🤖 incident-handler → sre.azure.com → sre-zavapower-ops",
@@ -660,6 +687,10 @@ def scenario_load():
                 grid.add_row(timeline.render())
                 grid.add_row(Text("  [dim]q = stop load test[/]"))
                 live.update(grid)
+
+                if recovered:
+                    time.sleep(3)
+                    break
                 time.sleep(2)
     finally:
         stop_event.set()
