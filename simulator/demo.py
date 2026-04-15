@@ -52,7 +52,7 @@ PORTAL_URL = os.environ.get("POWERGRID_PORTAL_URL",
     "https://app-powergrid-portal.azurewebsites.net")
 SN_URL  = os.environ.get("POWERGRID_SN_URL",  "https://dev268981.service-now.com")
 SN_USER = os.environ.get("POWERGRID_SN_USER", "admin")
-SN_PASS = os.environ.get("POWERGRID_SN_PASS", "ME@6SkW2d*lc")
+SN_PASS = os.environ.get("POWERGRID_SN_PASS", "<SET_VIA_ENV>")
 
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
@@ -980,24 +980,13 @@ def scenario_load():
                         try:
                             import json as _json
                             payload = _json.dumps({
-                                "source": "synthetic-monitoring",
-                                "testName": "grid-status-api availability",
-                                "status": "FAILED",
                                 "service": "grid-status-api",
                                 "endpoint": f"{GRID_API_URL}/regions",
                                 "containerApp": f"ca-{WORKLOAD}-grid",
                                 "resourceGroup": f"rg-{WORKLOAD}",
                                 "observedLatencyMs": int(ms),
-                                "expectedLatencyMs": 1000,
-                                "currentMaxReplicas": 1,
+                                "thresholdMs": 1000,
                                 "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "summary": (
-                                    f"CAPACITY ALERT: grid-status-api /regions endpoint latency is {int(ms)}ms "
-                                    f"(threshold: 1000ms). Container App ca-{WORKLOAD}-grid is capped at maxReplicas=1. "
-                                    f"Check if this is a capacity/scaling issue: compare App Insights server-side latency "
-                                    f"vs external latency. If server-side is fast but external is slow, scale up replicas "
-                                    f"using 'az containerapp update'. Do NOT just restart — that won't fix a scaling problem."
-                                ),
                             })
                             r = requests.post(SRE_TRIGGER_URL,
                                 headers={"Authorization": f"Bearer {sre_token}", "Content-Type": "application/json"},
