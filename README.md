@@ -25,50 +25,65 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Azure Resource Group                            │
-│                                                                         │
-│  ┌──────────────── Azure Container Apps Environment ──────────────────┐ │
-│  │                                                                     │ │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │ │
-│  │  │ portal   │ │ outage   │ │ meter    │ │ grid     │ │ notify   │ │ │
-│  │  │ -web     │ │ -api     │ │ -api     │ │ -status  │ │ -svc     │ │ │
-│  │  │ (JS)     │ │ (Python) │ │ (.NET)   │ │ (Node)   │ │ (Go)     │ │ │
-│  │  └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘ │ │
-│  └────────│─────────────│────────────│────────────│────────────│──────┘ │
-│           │             │            │            │            │        │
-│           └─────────────┼────────────┼────────────┼────────────┘        │
-│                         ▼            ▼            ▼                     │
-│               ┌─────────────────────────────────────┐                   │
-│               │      Observability Stack            │                   │
-│               │  Log Analytics  ·  App Insights     │                   │
-│               │  Managed Grafana                    │                   │
-│               └──────────────┬──────────────────────┘                   │
-│                              │                                          │
-│                              ▼                                          │
-│               ┌──────────────────────────┐                              │
-│               │   Azure Monitor Alerts   │                              │
-│               │  • HTTP 5xx errors       │                              │
-│               │  • High response time    │                              │
-│               │  • Container restarts    │                              │
-│               └────────────┬─────────────┘                              │
-│                            │ auto-investigate                           │
-│                            ▼ response plan                              │
-│               ┌──────────────────────────┐      ┌────────────────────┐  │
-│               │    Azure SRE Agent 🤖    │─────▶│  Knowledge Base    │  │
-│               │  • incident-handler      │      │  • Runbooks        │  │
-│               │  • servicenow-handler    │      │  • Architecture    │  │
-│               │  • utility-ops-agent     │      │  • Templates       │  │
-│               └─────┬──────────┬─────────┘      └────────────────────┘  │
-│                     │          │                                         │
-└─────────────────────│──────────│─────────────────────────────────────────┘
-                      │          │
-          ┌───────────┘          └───────────┐
-          ▼                                  ▼
-┌──────────────────┐              ┌──────────────────┐
-│   ServiceNow     │              │ Datadog/Dynatrace│
-│   (optional)     │              │   (optional)     │
-└──────────────────┘              └──────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Azure Resource Group                               │
+│                                                                             │
+│  ┌──────────── Azure Container Apps ───────────┐  ┌──────────────────────┐ │
+│  │                                              │  │  Azure App Service   │ │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐     │  │  ┌────────────────┐  │ │
+│  │  │ outage   │ │ meter    │ │ notify   │     │  │  │  portal-web    │  │ │
+│  │  │ -api     │ │ -api     │ │ -svc     │     │  │  │  (React)       │  │ │
+│  │  │ (Python) │ │ (.NET)   │ │ (Go)     │     │  │  └────────────────┘  │ │
+│  │  └────┬─────┘ └────┬─────┘ └────┬─────┘     │  └──────────────────────┘ │
+│  │       │             │            │            │                           │
+│  │  ┌────┴─────────────┴────────────┴─────┐     │  ┌──────────────────────┐ │
+│  │  │       grid-status-api (Node)        │     │  │  Azure VM (Windows)  │ │
+│  │  │       + /chaos endpoints            │     │  │  vm-powergrid-arc    │ │
+│  │  └─────────────────────────────────────┘     │  │  (Arc-enabled)       │ │
+│  └──────────────────────────────────────────────┘  └──────────────────────┘ │
+│           │             │            │            │            │             │
+│           └─────────────┼────────────┼────────────┼────────────┘             │
+│                         ▼            ▼            ▼                          │
+│               ┌─────────────────────────────────────┐                       │
+│               │       Observability Stack           │                       │
+│               │  Log Analytics  ·  App Insights     │                       │
+│               │  Managed Grafana · Azure Monitor    │                       │
+│               └──────────────┬──────────────────────┘                       │
+│                              │                                               │
+│         ┌────────────────────┼────────────────────┐                          │
+│         ▼                    ▼                    ▼                          │
+│  ┌─────────────┐  ┌──────────────────┐  ┌──────────────────┐               │
+│  │ Az Monitor  │  │  HTTP Triggers   │  │ Release Triggers │               │
+│  │ Alerts      │  │  (Synthetic /    │  │ (ADO Pipelines)  │               │
+│  │ • Disk      │  │   3rd Party)     │  │ • BuildSucceeded │               │
+│  │ • 5xx       │  │                  │  │ • BuildFailed    │               │
+│  └──────┬──────┘  └────────┬─────────┘  └────────┬─────────┘               │
+│         │                  │                      │                          │
+│         └──────────────────┼──────────────────────┘                          │
+│                            ▼                                                 │
+│     ┌──────────────────────────────────────────────┐                        │
+│     │          Azure SRE Agent 🤖                  │                        │
+│     │                                              │                        │
+│     │  sre-zavapower-ops:                          │    ┌────────────────┐  │
+│     │   • incident-handler (alerts + triggers)     │───▶│ Knowledge Base │  │
+│     │   • deployment-validator (post-deploy)        │    │ • Runbooks     │  │
+│     │   • vm-ops-agent (disk/VM alerts)             │    │ • Architecture │  │
+│     │   • utility-ops-agent (health checks)         │    │ • 7 Skills     │  │
+│     │                                              │    └────────────────┘  │
+│     │  sre-zavapower-itsupport:                    │                        │
+│     │   • it-support-handler (SNOW tickets)         │                        │
+│     └────┬────────────────┬────────────────┬───────┘                        │
+│          │                │                │                                 │
+└──────────│────────────────│────────────────│─────────────────────────────────┘
+           │                │                │
+           ▼                ▼                ▼
+┌────────────────┐ ┌────────────────┐ ┌──────────────────────────────────────┐
+│  ServiceNow    │ │  Azure DevOps  │ │  3rd Party Observability (optional) │
+│  • Incidents   │ │  • Pipelines   │ │                                      │
+│  • Work Notes  │ │  • Releases    │ │  Datadog ──┐                         │
+│  • Resolution  │ │  • Fix PRs     │ │  Dynatrace ┼─▶ HTTP Trigger ──▶ SRE │
+│                │ │                │ │  Splunk ───┘     Agent               │
+└────────────────┘ └────────────────┘ └──────────────────────────────────────┘
 ```
 
 ---
@@ -77,43 +92,47 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 
 | Resource | Purpose |
 |:---------|:--------|
-| **SRE Agent** | AI agent with managed identity, knowledge base, custom agents, and response plan |
-| **PowerGrid Services** | 5 microservices (portal-web, outage-api, meter-api, grid-status-api, notification-svc) on Container Apps |
-| **Log Analytics Workspace** | Central log storage — KQL queries for diagnostics |
-| **Application Insights** | Request telemetry, error tracking, and performance monitoring |
+| **SRE Agents (×2)** | sre-zavapower-ops (infra/deploy) + sre-zavapower-itsupport (IT helpdesk) |
+| **Container Apps (×4)** | outage-api (Python), meter-api (.NET), grid-status-api (Node), notification-svc (Go) |
+| **App Service** | portal-web (React) — customer-facing power grid dashboard |
+| **Azure VM** | vm-powergrid-arc — Windows Server 2022, simulates Arc-enabled on-prem grid server |
+| **Log Analytics** | Central log + metric storage — KQL queries for diagnostics |
+| **Application Insights** | Request telemetry, error tracking, performance monitoring (SDK in all services) |
 | **Managed Grafana** | Dashboards for real-time service observability |
-| **Azure Monitor Alerts** | 5xx errors, high latency, container restarts → auto-triggers agent |
-| **Container Registry** | PowerGrid container images |
+| **Azure Monitor Alerts** | Disk pressure (log-based), high latency (metric), HTTP 5xx (metric) |
+| **Container Registry** | PowerGrid container images (5 services) |
+| **ADO Pipelines** | Build (CI) + Release (CD) with bug injection and deployment validation |
 | **Managed Identity** | Reader + Monitoring Reader + Log Analytics Reader + Container App Contributor RBAC |
 
 ### SRE Agent Configuration
 
-| Component | File | Purpose |
-|:----------|:-----|:--------|
-| **incident-handler** | `sre-config/agents/incident-handler.yaml` | Investigates incidents using logs, KQL, and runbooks |
-| **servicenow-handler** | `sre-config/agents/servicenow-handler.yaml` | Manages ServiceNow incident lifecycle |
-| **utility-ops-agent** | `sre-config/agents/utility-ops-agent.yaml` | Scheduled health checks and grid status reports |
-| **Response Plan** | `sre-config/response-plans/auto-investigate.yaml` | Routes Azure Monitor alerts to incident-handler |
-| **Health Check** | `sre-config/scheduled-tasks/health-check.yaml` | Runs utility-ops-agent every 30 minutes |
-| **ServiceNow MCP** | `sre-config/connectors/servicenow-mcp.yaml` | Optional ServiceNow connector template |
-| **Datadog MCP** | `sre-config/connectors/datadog-mcp.yaml` | Optional Datadog connector template |
-| **Dynatrace MCP** | `sre-config/connectors/dynatrace-mcp.yaml` | Optional Dynatrace connector template |
-| **Global Tools** | Built-in | Azure Monitor, Log Analytics, App Insights, DevOps |
+| Component | Purpose |
+|:----------|:--------|
+| **incident-handler** | Investigates Azure Monitor alerts + HTTP triggers — logs, KQL, App Insights, scales infra |
+| **deployment-validator** | Post-deploy health checks — triggered by ADO Release BuildSucceeded |
+| **vm-ops-agent** | VM infrastructure alerts — disk pressure, CPU, memory on Arc-enabled VMs |
+| **utility-ops-agent** | Scheduled health checks and grid status reports |
+| **it-support-handler** | IT helpdesk — processes ServiceNow laptop tickets (on sre-zavapower-itsupport) |
+| **HTTP Trigger** | Accepts synthetic monitoring + 3rd party alerts (Datadog, Dynatrace, Splunk) |
+| **Release Triggers** | ADO pipeline events → deployment-validator (success) / incident-handler (failure) |
+| **Incident Filters** | Routes Azure Monitor alerts by title to the right agent |
+| **7 Skills** | Dynamic diagnostic runbooks for each service + SNOW + deployment rollback |
+| **4 SNOW Tools** | Create, update, resolve, lookup ServiceNow incidents via REST API |
 
 ---
 
 ## Lab Scenarios
 
-| # | Scenario | Break Type | What SRE Agent Does | Persona |
-|:-:|:---------|:-----------|:--------------------|:--------|
-| 1 | **Service Outage** | outage-api returns HTTP 503 | Queries logs, finds crash, restarts container | IT Operations |
-| 2 | **Memory Leak** | meter-api OOM kill | Detects OOM in container logs, scales replicas, recommends fix | IT Operations |
-| 3 | **Deploy Regression** | grid-status-api slow responses (>3s) | Correlates latency spike with deployment, identifies bad config | Developer |
-| 4 | **Container Crash Loop** | notification-svc CrashLoopBackOff | Finds missing env var, applies config fix | IT Operations |
-| 5 | **Alert-Driven Auto-Fix** | Same as #1 with response plan | Alert fires → agent investigates and remediates autonomously | ZeroOps |
-| 6 | **ServiceNow Lifecycle** | Any break + ServiceNow connector | Creates INC, updates with findings, resolves with RCA | ITSM |
-| 7 | **Source Code Analysis** | Any break + GitHub connected | Finds root cause in source code, creates GitHub issue | Developer |
-| 8 | **Combined Chaos** | All services break simultaneously | Agent triages by severity, handles in parallel | Stress Test |
+| # | Scenario | Trigger Type | What SRE Agent Does |
+|:-:|:---------|:-------------|:--------------------|
+| 1 | **Bad Deploy — App Crash** | ADO Release → deployment-validator | Detects SCADA bug crash, rolls back revision, creates fix PR |
+| 2 | **Bad Deploy — Perf Regression** | ADO Release → deployment-validator | Finds 50K sync hashes blocking event loop, rolls back |
+| 3 | **Bad Deploy — Config Error** | ADO Release → deployment-validator | Identifies wrong gateway port (9443→8443), fixes config |
+| 4 | **Disk Pressure (VM)** | Azure Monitor → vm-ops-agent | Detects disk at 97%, cleans SCADA logs, documents in SNOW |
+| 5 | **Organic Load Spike** | HTTP Trigger → incident-handler | Analyzes traffic patterns, checks grid events, scales replicas + CPU |
+| 6 | **Pipeline Build Failure** | ADO Build Failed → incident-handler | Reads build logs, finds flask.ext import error, creates fix PR |
+| 7 | **ServiceNow Laptop Replace** | SNOW Incident → it-support-handler | Checks warranty, fills laptop form, resolves ticket, emails user |
+| 8 | **Reset All** | Manual | Restores all services to healthy baseline |
 
 ---
 
@@ -201,16 +220,54 @@ Use the CLI simulator to inject failures into PowerGrid services:
 python simulator/demo.py
 ```
 
-Or apply breaks individually:
+The simulator presents 8 scenarios, each launched in a separate terminal window with live monitoring:
 
-| Scenario | Break Command | What Breaks |
-|:---------|:-------------|:------------|
-| Service Outage | `python simulator/demo.py --scenario 1` | outage-api returns 503 on all endpoints |
-| Memory Leak | `python simulator/demo.py --scenario 2` | meter-api consumes memory until OOM killed |
-| Deploy Regression | `python simulator/demo.py --scenario 3` | grid-status-api response times exceed 3 seconds |
-| Container Crash | `python simulator/demo.py --scenario 4` | notification-svc enters CrashLoopBackOff |
-| Combined Chaos | `python simulator/demo.py --scenario 6` | All services break simultaneously |
-| Reset All | `python simulator/demo.py --scenario 7` | Restore all services to healthy baseline |
+| # | Scenario | Command | What Happens |
+|:-:|:---------|:--------|:-------------|
+| 1 | Bad Deploy — App Crash | `--scenario 1` | ADO pipeline deploys SCADA bug → outage-api crashes on `crew_status.upper()` |
+| 2 | Bad Deploy — Perf Regression | `--scenario 2` | ADO pipeline deploys 50K sync SHA-256 hashes → grid-status-api blocks |
+| 3 | Bad Deploy — Config Error | `--scenario 3` | ADO pipeline deploys wrong gateway port (9443→8443) → notification-svc timeouts |
+| 4 | Disk Pressure (VM) | `--scenario 4` | Creates ~22GB SCADA data on C: drive → Azure Monitor log alert fires |
+| 5 | Organic Load Spike | `--scenario 5` | 100 concurrent clients flood grid-status-api → HTTP trigger fires SRE Agent |
+| 6 | Pipeline Build Failure | `--scenario 6` | Triggers ADO build with broken flask.ext imports → build fails |
+| 7 | ServiceNow Laptop Replace | `--scenario 7` | Creates SNOW incident → SRE Agent checks warranty, fills form, resolves |
+| 8 | Reset All | `--scenario 8` | Restores all services to healthy baseline |
+
+### How Triggers Work
+
+The lab uses three trigger types to invoke the SRE Agent:
+
+```
+┌─────────────────────────┐
+│   Azure Monitor Alerts  │──▶ Incident Filters ──▶ vm-ops-agent (disk)
+│   (disk pressure, 5xx)  │                    ──▶ incident-handler (other)
+└─────────────────────────┘
+
+┌─────────────────────────┐
+│   ADO Release Triggers  │──▶ BuildSucceeded ──▶ deployment-validator
+│   (pipeline events)     │──▶ BuildFailed   ──▶ incident-handler
+└─────────────────────────┘
+
+┌─────────────────────────┐
+│   HTTP Triggers         │──▶ Synthetic monitor (simulator)
+│   (REST API endpoint)   │──▶ 3rd party: Datadog, Dynatrace, Splunk
+└─────────────────────────┘
+
+┌─────────────────────────┐
+│   ServiceNow Incidents  │──▶ Native polling ──▶ it-support-handler
+│   (SNOW platform)       │     (every 60s)       (on sre-zavapower-itsupport)
+└─────────────────────────┘
+```
+
+| Trigger | Scenarios | Agent | How It Works |
+|:--------|:----------|:------|:-------------|
+| **Azure Monitor** | 4 (disk) | vm-ops-agent | Log-based alert fires when C: < 15% free → incident filter routes by title |
+| **ADO Release** | 1, 2, 3 | deployment-validator | BuildSucceeded on Release pipeline → validates health post-deploy |
+| **ADO Build** | 6 | incident-handler | BuildFailed on Build pipeline → reads logs, identifies error, creates fix PR |
+| **HTTP Trigger** | 5 (load) | incident-handler | Simulator detects high latency → POSTs to trigger URL → agent investigates autonomously |
+| **ServiceNow** | 7 | it-support-handler | Incident created in SNOW → agent polls, picks up ticket, processes it |
+
+> **3rd Party Integration:** Any external system (Datadog, Dynatrace, Splunk, PagerDuty) can POST to the HTTP trigger URL to invoke the SRE Agent. The payload just needs `service`, `endpoint`, `observedLatencyMs`, and `thresholdMs`. The agent's instructions handle all the investigation logic.
 
 ---
 
@@ -263,12 +320,15 @@ current replica counts and resource utilization.
 
 ### Automated Investigation
 
-After breaking a service, the Azure Monitor alert will fire within **5-10 minutes**. If the response plan is configured:
+Depending on the scenario, the SRE Agent is triggered automatically:
 
-1. Alert fires → response plan matches rule name
-2. incident-handler agent is invoked automatically
-3. Agent investigates, applies fix, validates recovery
-4. Check **Activities → Incidents** in the SRE Agent portal to see the full investigation log
+- **Scenarios 1-3 (Bad Deployments):** ADO release pipeline completes → release trigger fires → deployment-validator checks health → if broken, investigates and rolls back
+- **Scenario 4 (Disk Pressure):** Azure Monitor log alert fires within ~5 min → incident filter routes to vm-ops-agent → cleans up files, documents in SNOW
+- **Scenario 5 (Load Spike):** Simulator detects sustained high latency → fires HTTP trigger → incident-handler analyzes traffic, checks grid events, scales infrastructure
+- **Scenario 6 (Build Failure):** ADO build fails → build failure trigger fires → incident-handler reads logs, creates fix PR
+- **Scenario 7 (SNOW):** Incident created in ServiceNow → sre-zavapower-itsupport polls every 60s → it-support-handler processes the ticket end-to-end
+
+Check **sre.azure.com → Activities** to see live investigation threads.
 
 ---
 
