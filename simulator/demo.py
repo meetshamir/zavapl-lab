@@ -178,7 +178,7 @@ def _indent(text, prefix="    "):
     return "\n".join(f"{prefix}{line}" for line in text.split("\n"))
 
 def show_backstory(emoji, title, backstory, what_happens):
-    """Phase 1: Display the scenario narrative and wait for Enter."""
+    """Phase 1: Display the scenario narrative then proceed automatically."""
     console.clear()
     console.print(Panel(
         f"\n  [bold]BACKSTORY:[/]\n{_indent(backstory)}\n\n"
@@ -186,7 +186,7 @@ def show_backstory(emoji, title, backstory, what_happens):
         title=f"[bold]{emoji} {title}[/]",
         border_style="cyan", width=68,
     ))
-    console.input("[dim]  Press Enter to start...[/]")
+    time.sleep(2)
 
 def show_result(emoji, title, lines):
     """Phase 4: Display result summary and wait for Enter."""
@@ -296,30 +296,54 @@ def run_build_release(failure_scenario, services):
     return True
 
 # ── Alert Polling Helper ────────────────────────────────────
-def poll_alert(alert_name_contains, since_time):
-    """Check if an Azure Monitor alert matching the name has fired since since_time.
-    Returns (fired: bool, alert_time: str or None)."""
+def poll_alert(alert_name_contains, since_time, required_condition="Fired"):
+    """Check if an Azure Monitor alert matching the name exists.
+    Returns (found: bool, alert_id: str or None, alert_time: str or None).
+    - alert_name_contains: substring to match in the alert rule name
+    - since_time: only match alerts fired after this ISO timestamp
+    - required_condition: "Fired" or "Resolved"
+    """
     try:
         result = subprocess.run(
             'az rest --method GET --url "https://management.azure.com/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup=rg-powergrid" -o json',
-            shell=True, timeout=15, capture_output=True, text=True
+            shell=True, timeout=60, capture_output=True, text=True
         )
         if result.returncode == 0:
             import json as _json
-            alerts = _json.loads(result.stdout)
+            alerts = _json.loads(result.stdout, strict=False)
             for a in alerts.get("value", []):
                 props = a.get("properties", {}).get("essentials", {})
                 rule = props.get("alertRule", "")
                 if alert_name_contains not in rule:
                     continue
-                if props.get("monitorCondition") != "Fired":
-                    continue
                 alert_time = props.get("startDateTime", "")
-                if alert_time > since_time:
-                    return True, alert_time
+                if alert_time < since_time:
+                    continue
+                if props.get("monitorCondition") != required_condition:
+                    continue
+                alert_id = a.get("id", "")
+                return True, alert_id, alert_time
     except Exception:
         pass
-    return False, None
+    return False, None, None
+
+
+def poll_alert_by_id(alert_id, required_condition="Resolved"):
+    """Check if a specific alert has transitioned to the required condition.
+    Returns True if the alert matches the required condition."""
+    try:
+        result = subprocess.run(
+            f'az rest --method GET --url "https://management.azure.com{alert_id}?api-version=2019-03-01" -o json',
+            shell=True, timeout=30, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            import json as _json
+            data = _json.loads(result.stdout, strict=False)
+            condition = data.get("properties", {}).get("essentials", {}).get("monitorCondition", "")
+            return condition == required_condition
+    except Exception:
+        pass
+    return False
 
 def poll_agent_thread(keyword, since_time):
     """Check if SRE Agent has a thread matching keyword created since since_time.
@@ -590,7 +614,7 @@ def scenario_disk():
         "The grid management server (gridmgmt01) runs SCADA data\n"
         "collection and stores raw telemetry locally before forwarding\n"
         "to Azure Data Explorer. Over the past week, a misconfigured\n"
-        "log rotation policy let C:\\SCADA\\Logs grow unchecked.\n\n"
+        "log rotation policy let C:\\data\\grid-logs grow unchecked.\n\n"
         "Combined with nightly SCADA backups that were never pruned,\n"
         "the C: drive is now at 90%+ capacity and climbing.",
 
@@ -606,26 +630,39 @@ def scenario_disk():
 
     console.print("[bold cyan]  ▶ Simulating disk pressure on Windows VM...[/]")
     try:
+        ps_script = (
+            "New-Item -ItemType Directory -Path C:\\data\\grid-logs, C:\\data\\scada-backups, C:\\data\\meter-data -Force | Out-Null; "
+            "$disk = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"; "
+            "$freeGB = [math]::Floor($disk.FreeSpace / 1073741824); "
+            "$fillGB = $freeGB - 2; "
+            "if ($fillGB -lt 5) { Write-Output ERROR_NOT_ENOUGH_SPACE; exit 1 }; "
+            "$scadaBytes = [math]::Floor($fillGB * 0.35) * 1073741824; "
+            "$logBytes = [math]::Floor($fillGB * 0.30) * 1073741824; "
+            "$meterBytes = [math]::Floor($fillGB * 0.20) * 1073741824; "
+            "$tmpBytes = ($fillGB - [math]::Floor($fillGB * 0.35) - [math]::Floor($fillGB * 0.30) - [math]::Floor($fillGB * 0.20)) * 1073741824; "
+            "fsutil file createnew C:\\data\\scada-backups\\scada-full-2026-04-01.bak $scadaBytes; "
+            "fsutil file createnew C:\\data\\grid-logs\\grid-manager.log $logBytes; "
+            "fsutil file createnew C:\\data\\meter-data\\interval-reads-2026-Q1.dat $meterBytes; "
+            "fsutil file createnew C:\\data\\grid-logs\\core-dump-20260401.tmp $tmpBytes; "
+            "Write-Output DISK_FILLED"
+        )
         result = subprocess.run(
-            'az vm run-command invoke --resource-group rg-powergrid '
-            '--name vm-powergrid-arc --command-id RunPowerShellScript '
-            '--scripts "'
-            'New-Item -ItemType Directory -Path C:\\SCADA\\Logs, C:\\SCADA\\Backups -Force | Out-Null; '
-            'fsutil file createnew C:\\SCADA\\Logs\\grid-manager.log 53687091200; '
-            'fsutil file createnew C:\\SCADA\\Backups\\scada-full-2026-04.bak 42949672960; '
-            'fsutil file createnew C:\\SCADA\\Logs\\audit-2026-Q1.log 10737418240; '
-            'fsutil file createnew C:\\SCADA\\Backups\\meter-data.bak 5368709120; '
-            'Write-Output DISK_FILLED" '
-            '--query "value[0].message" -o tsv',
+            f'az vm run-command invoke --resource-group rg-powergrid '
+            f'--name vm-powergrid-arc --command-id RunPowerShellScript '
+            f'--scripts "{ps_script}" '
+            f'--query "value[0].message" -o tsv',
             shell=True, timeout=180, capture_output=True, text=True
         )
         if "DISK_FILLED" in result.stdout or "createnew" in result.stdout.lower():
-            console.print("[green]  ✓ Disk pressure injected (~110GB of SCADA data)[/]\n")
+            console.print("[green]  ✓ Disk pressure injected (C:\\data filled dynamically)[/]\n")
+        elif "ERROR_NOT_ENOUGH_SPACE" in result.stdout:
+            console.print("[green]  ✓ Disk already under pressure (< 7 GB free) — skipping fill[/]\n")
         elif "OperationNotAllowed" in result.stdout or "not running" in result.stdout.lower():
             console.print("[red]  ✗ VM is not running![/]")
             console.input("[dim]  Press Enter...[/]"); return
         else:
-            console.print(f"[yellow]  ⚠ Unexpected result: {result.stdout[:100]}[/]\n")
+            console.print(f"[yellow]  ⚠ Unexpected result: {result.stdout[:100]}[/]")
+            console.input("[dim]  Press Enter...[/]"); return
     except subprocess.TimeoutExpired:
         console.print("[red]  ✗ Script timed out[/]")
         console.input("[dim]  Press Enter...[/]"); return
@@ -643,10 +680,13 @@ def scenario_disk():
     
     alert_fired = False
     agent_started = False
+    alert_resolved = False
+    tracked_alert_id = None
     checks = []
     recovered = False
-    last_alert_poll = datetime.min
-    last_agent_poll = datetime.min
+    last_alert_poll = datetime.now()  # delay first poll
+    last_agent_poll = datetime.now()
+    last_resolve_poll = datetime.now()
 
     with Live(console=console, refresh_per_second=1) as live:
         while not recovered:
@@ -656,45 +696,30 @@ def scenario_disk():
 
             now = datetime.now()
 
-            # Poll Azure Monitor for NEW disk alerts (every 10s)
+            # Phase A: Poll for FIRED alert (fresh, after sim_start)
             if not alert_fired and (now - last_alert_poll).seconds >= 10:
                 last_alert_poll = now
-                try:
-                    result = subprocess.run(
-                        'az rest --method GET --url "https://management.azure.com/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup=rg-powergrid" -o json',
-                        shell=True, timeout=15, capture_output=True, text=True
-                    )
-                    if result.returncode == 0:
-                        import json as _json
-                        alerts = _json.loads(result.stdout)
-                        for a in alerts.get("value", []):
-                            props = a.get("properties", {}).get("essentials", {})
-                            if "disk-pressure" not in props.get("alertRule", ""):
-                                continue
-                            if props.get("monitorCondition") != "Fired":
-                                continue
-                            # Only match alerts fired AFTER we started the simulation
-                            alert_time = props.get("startDateTime", "")
-                            if alert_time > sim_start:
-                                alert_fired = True
-                                timeline.add("🚨 ALERT FIRED — alert-powergrid-disk-pressure (Sev2)", "red bold")
-                                break
-                except Exception:
-                    pass
+                fired, aid, _ = poll_alert("disk-pressure", sim_start, "Fired")
+                if fired:
+                    alert_fired = True
+                    tracked_alert_id = aid
+                    timeline.add("🚨 ALERT FIRED — alert-powergrid-disk-pressure (Sev2)", "red bold")
 
-            # Poll SRE Agent threads for activity (every 10s)
+            # Phase B: Poll for SRE Agent thread
             if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
                 last_agent_poll = now
-                try:
-                    result = subprocess.run(
-                        'srectl thread list --quiet',
-                        shell=True, timeout=10, capture_output=True, text=True
-                    )
-                    if "disk-pressure" in result.stdout.lower() or "disk" in result.stdout.lower():
-                        agent_started = True
-                        timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
-                except Exception:
-                    pass
+                found, _ = poll_agent_thread("disk", sim_start)
+                if found:
+                    agent_started = True
+                    timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
+
+            # Phase C: Poll for same alert to become RESOLVED
+            if alert_fired and tracked_alert_id and not alert_resolved and (now - last_resolve_poll).seconds >= 10:
+                last_resolve_poll = now
+                if poll_alert_by_id(tracked_alert_id, "Resolved"):
+                    alert_resolved = True
+                    recovered = True
+                    timeline.add("🎉 DISK PRESSURE RESOLVED — alert auto-resolved!", "green bold")
 
             # Poll disk usage from Log Analytics (every 15s, uses cached Perf data)
             disk_pct = None
@@ -729,10 +754,6 @@ def scenario_disk():
                     })
                     if len(checks) > 20:
                         checks.pop(0)
-
-                    if disk_pct < 50:
-                        recovered = True
-                        timeline.add(f"🎉 DISK CLEANED! Usage dropped to {disk_pct}%", "green bold")
 
             # Build display
             grid = Table.grid(padding=1)
@@ -806,10 +827,10 @@ def scenario_disk():
     show_result("🎉", "DISK PRESSURE RESOLVED!", [
         "SRE Agent (vm-ops-agent):",
         "- Detected disk at 94% via Azure Monitor alert",
-        "- SSHed into vm-grid-mgmt-01",
-        "- Cleaned C:\\SCADA\\Logs (recovered 10GB)",
-        "- Pruned old SCADA backups (recovered 8GB)",
-        "- Fixed logrotate config for scada.log",
+        "- Ran PowerShell diagnostics on vm-powergrid-arc",
+        "- Cleaned C:\\data\\grid-logs (recovered old logs and core dumps)",
+        "- Pruned old SCADA backups from C:\\data\\scada-backups",
+        "- Removed stale meter data from C:\\data\\meter-data",
         "- Created SNOW ticket with remediation details",
         "",
         "Check sre.azure.com for the full investigation thread.",
@@ -826,99 +847,187 @@ def scenario_load():
         "There is NO bug — the code is correct. The infrastructure is\n"
         "simply overwhelmed by legitimate traffic at 50x normal volume.",
 
-        "1. We activate chaos mode on grid-status-api (server-side latency)\n"
-        "2. Response times climb above 2000ms as the service saturates\n"
-        "3. Azure Monitor fires high-latency alert (avg > 1500ms)\n"
-        "4. SRE Agent investigates — finds NO code defect\n"
-        "5. Agent recommends horizontal scaling + CDN caching\n"
-        "6. Agent documents the capacity event in SNOW")
+        "1. We cap replicas to 1 (current provisioned capacity)\n"
+        "2. We blast grid-status-api with 100 concurrent clients\n"
+        "3. Response times climb as the 0.25 vCPU saturates\n"
+        "4. Synthetic monitoring detects the slowness\n"
+        "5. HTTP trigger fires → SRE Agent investigates autonomously\n"
+        "6. Agent finds NO code defect — scales infrastructure to resolve")
 
 
     if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
-    # Activate chaos mode — inject 2500ms server-side latency for 10 minutes
-    console.print("[bold cyan]  ▶ Activating chaos mode on grid-status-api (2500ms latency)...[/]")
+    # Cap replicas to 1 so autoscale doesn't rescue the service
+    console.print("[bold cyan]  ▶ Capping grid-status-api to 1 replica (simulating provisioned capacity)...[/]")
     try:
-        r = requests.post(f"{GRID_API_URL}/chaos/latency",
-                          json={"latency_ms": 2500, "duration_min": 10}, timeout=15)
-        if r.status_code == 200:
-            console.print("[green]  ✓ Chaos latency active — server responses now ~2500ms[/]\n")
+        result = subprocess.run(
+            f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} '
+            f'--max-replicas 1 --output none',
+            shell=True, timeout=30, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            console.print("[green]  ✓ Max replicas capped to 1[/]")
         else:
-            console.print(f"[red]  ✗ Failed to activate chaos: {r.status_code}[/]")
+            console.print(f"[yellow]  ⚠ Could not cap replicas (may already be 1)[/]")
+    except Exception:
+        pass
+
+    # Get auth token BEFORE starting load (az cli is slow under CPU pressure)
+    console.print("[dim]  Acquiring SRE Agent auth token...[/]")
+    try:
+        sre_token = subprocess.run(
+            'az account get-access-token --resource "https://azuresre.ai" --query accessToken -o tsv',
+            shell=True, capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        if not sre_token:
+            console.print("[red]  ✗ Failed to get token. Run: az login[/]")
             console.input("[dim]  Press Enter...[/]"); return
     except Exception as e:
-        console.print(f"[red]  ✗ Chaos endpoint error: {e}[/]")
+        console.print(f"[red]  ✗ Token error: {e}[/]")
         console.input("[dim]  Press Enter...[/]"); return
 
-    # Generate concurrent request traffic to drive up App Insights metrics
+    # Blast with high concurrency to overwhelm the 0.25 vCPU single replica
+    console.print("[bold cyan]  ▶ Generating 50x traffic spike (100 concurrent clients)...[/]")
+    console.print(f"  [dim]Open in browser to see impact:[/] [link=https://app-powergrid-portal.azurewebsites.net]https://app-powergrid-portal.azurewebsites.net[/link]\n")
     stop_event = threading.Event()
+    request_count = [0]  # mutable counter shared across threads
 
     def worker():
+        """Simulate a customer repeatedly checking grid status."""
         while not stop_event.is_set():
             try:
-                requests.get(f"{GRID_API_URL}/regions", timeout=10)
+                requests.get(f"{GRID_API_URL}/regions", timeout=15)
+                request_count[0] += 1
             except Exception:
-                pass
-            time.sleep(0.5)
+                request_count[0] += 1
+            time.sleep(0.05)  # ~20 req/s per worker
 
-    threads = [threading.Thread(target=worker, daemon=True) for _ in range(10)]
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(100)]
     for t in threads:
         t.start()
 
+    # Separate probe thread — short timeout so we get fast readings even under load
+    probe_result = [0, 0.0]  # [status_code, latency_ms]
+    probe_lock = threading.Lock()
+
+    def prober():
+        while not stop_event.is_set():
+            start = time.time()
+            try:
+                r = requests.get(f"{GRID_API_URL}/health", timeout=5)
+                elapsed = (time.time() - start) * 1000
+                with probe_lock:
+                    probe_result[0] = r.status_code
+                    probe_result[1] = elapsed
+            except requests.exceptions.Timeout:
+                elapsed = (time.time() - start) * 1000
+                with probe_lock:
+                    probe_result[0] = 0
+                    probe_result[1] = elapsed  # show actual wait time, not 0
+            except Exception:
+                with probe_lock:
+                    probe_result[0] = 0
+                    probe_result[1] = (time.time() - start) * 1000
+            time.sleep(0.5)
+
+    probe_thread = threading.Thread(target=prober, daemon=True)
+    probe_thread.start()
+
+    sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
-    timeline.add("Chaos latency activated — 2500ms server-side delay", "cyan")
-    timeline.add("Load spike started — 10 concurrent workers", "cyan")
+    timeline.add("Replicas capped to 1 (provisioned capacity)", "cyan")
+    timeline.add("Traffic spike started — 100 concurrent clients (~2000 req/s)", "cyan")
     checks = []
     had_slow = False
-    consecutive_fast = 0
-    recovered = False
-    max_iterations = 180  # ~6 min at 2s intervals
+    trigger_sent = False
+    agent_thread_id = None
+
+    # SRE Agent HTTP trigger URL
+    SRE_TRIGGER_URL = "https://sre-zavapower-ops--5a379588.bc75887b.eastus2.azuresre.ai/api/v1/httptriggers/trigger/9a276c65-c2ed-4e6e-b478-07e79a85a495"
 
     try:
         with Live(console=console, refresh_per_second=2) as live:
-            for i in range(max_iterations):
+            while True:
                 key = check_key()
                 if key in (b"q", b"Q"):
                     break
 
-                code, ms = health_check(GRID_API_URL, "/regions")
-                is_slow = ms > 500
-                checks.append({"ts": datetime.now().strftime("%H:%M:%S"),
-                                "code": code, "ms": ms, "slow": is_slow})
-                if len(checks) > 20:
-                    checks.pop(0)
+                # Read latest probe result (non-blocking)
+                with probe_lock:
+                    code, ms = probe_result[0], probe_result[1]
 
-                if is_slow and not had_slow:
-                    had_slow = True
-                    timeline.add(f"⚠️ High latency detected: {ms:.0f}ms", "red")
-                
-                if is_slow:
-                    consecutive_fast = 0
-                else:
-                    consecutive_fast += 1
+                # Record every reading (including timeouts where ms > 0)
+                if ms > 0:
+                    is_slow = code != 200 or ms > 500
+                    # Only add if timestamp changed (avoid duplicate entries)
+                    ts_now = datetime.now().strftime("%H:%M:%S")
+                    if not checks or checks[-1]["ts"] != ts_now:
+                        checks.append({"ts": ts_now,
+                                        "code": code, "ms": ms, "slow": is_slow})
+                        if len(checks) > 20:
+                            checks.pop(0)
 
-                if had_slow and consecutive_fast >= 3 and not recovered:
-                    recovered = True
-                    timeline.add("🎉 LATENCY NORMALIZED! Agent scaled the service!", "green bold")
-                    stop_event.set()  # stop the load generators
+                    if is_slow and not had_slow:
+                        had_slow = True
+                        timeline.add(f"⚠️ High latency detected: {ms:.0f}ms", "red")
 
-                remaining = (max_iterations - i) * 2
+                    # Once we detect sustained slowness (3+ slow checks), fire the HTTP trigger
+                    slow_count = sum(1 for c in checks if c["slow"])
+                    if slow_count >= 3 and not trigger_sent:
+                        trigger_sent = True
+                        timeline.add("🔔 Synthetic test FAILED — triggering SRE Agent...", "red bold")
+                        try:
+                            import json as _json
+                            payload = _json.dumps({
+                                "source": "synthetic-monitoring",
+                                "testName": "grid-status-api availability",
+                                "status": "FAILED",
+                                "service": "grid-status-api",
+                                "endpoint": f"{GRID_API_URL}/regions",
+                                "containerApp": f"ca-{WORKLOAD}-grid",
+                                "resourceGroup": f"rg-{WORKLOAD}",
+                                "observedLatencyMs": int(ms),
+                                "expectedLatencyMs": 1000,
+                                "currentMaxReplicas": 1,
+                                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "summary": (
+                                    f"CAPACITY ALERT: grid-status-api /regions endpoint latency is {int(ms)}ms "
+                                    f"(threshold: 1000ms). Container App ca-{WORKLOAD}-grid is capped at maxReplicas=1. "
+                                    f"Check if this is a capacity/scaling issue: compare App Insights server-side latency "
+                                    f"vs external latency. If server-side is fast but external is slow, scale up replicas "
+                                    f"using 'az containerapp update'. Do NOT just restart — that won't fix a scaling problem."
+                                ),
+                            })
+                            r = requests.post(SRE_TRIGGER_URL,
+                                headers={"Authorization": f"Bearer {sre_token}", "Content-Type": "application/json"},
+                                data=payload, timeout=15)
+                            if r.status_code in (200, 201, 202):
+                                resp = r.json()
+                                agent_thread_id = resp.get("threadId", "")
+                                timeline.add("🤖 SRE Agent investigating (autonomous)", "yellow bold")
+                                if agent_thread_id:
+                                    timeline.add(f"📋 Thread: {agent_thread_id[:8]}...", "dim")
+                            else:
+                                timeline.add(f"⚠️ Trigger failed: HTTP {r.status_code}", "red")
+                        except Exception as e:
+                            timeline.add(f"⚠️ Trigger error: {str(e)[:40]}", "red")
+
+                # Build display
                 grid = Table.grid(padding=1)
                 grid.add_column()
 
-                if recovered:
-                    grid.add_row(Panel(
-                        "[bold green]🎉🎉🎉  LATENCY NORMALIZED!  🎉🎉🎉[/]\n\n"
-                        "[green]Agent found no code bug — scaled the service to handle load.[/]",
-                        border_style="green bold", width=64,
-                    ))
-
-                color = "red" if ms > 2000 else "yellow" if ms > 500 else "green"
+                color = "red" if code == 0 or ms > 2000 else "yellow" if ms > 500 else "green"
+                status_label = "TIMEOUT" if code == 0 else str(code)
+                reqs = request_count[0]
                 grid.add_row(Text(
-                    f"  📈 grid-status-api: {code} / {ms:.0f}ms   "
-                    f"[{'RECOVERED' if recovered else f'auto-stop in {remaining}s'}]",
+                    f"  📈 grid-status-api: {status_label} / {ms:.0f}ms   [{reqs:,} reqs sent]",
                     style=f"{color} bold"))
+
+                # Trigger + agent status line
+                t_status = "[green]🔔 TRIGGERED[/]" if trigger_sent else "[yellow]⏳ detecting...[/]"
+                ag_status = "[green]🤖 autonomous[/]" if agent_thread_id else "[dim]waiting[/]"
+                grid.add_row(Text(f"  Synthetic test: {t_status}   Agent: {ag_status}"))
 
                 ht = Table(box=box.ROUNDED, border_style="dim", width=64)
                 ht.add_column("Time", style="dim", width=9)
@@ -926,45 +1035,38 @@ def scenario_load():
                 ht.add_column("Latency", width=10, justify="right")
                 ht.add_column("", width=8, justify="center")
                 for c in checks[-8:]:
-                    lc = ("red" if c["ms"] > 2000
-                          else "yellow" if c["ms"] > 500 else "green")
-                    ht.add_row(c["ts"], str(c["code"]),
+                    lc = "red" if c["code"] == 0 or c["ms"] > 2000 else "yellow" if c["ms"] > 500 else "green"
+                    status = "TIMEOUT" if c["code"] == 0 else str(c["code"])
+                    ht.add_row(c["ts"], status,
                                f"[{lc}]{c['ms']:.0f}ms[/]",
                                "[red]🐌[/]" if c["slow"] else "[green]⚡[/]")
                 grid.add_row(ht)
-                grid.add_row(Text(
-                    "  🤖 incident-handler → sre.azure.com → sre-zavapower-ops",
-                    style="dim"))
                 grid.add_row(timeline.render())
-                grid.add_row(Text("  [dim]q = stop load test[/]"))
+                grid.add_row(Text("  [dim]q = stop load and return to menu[/]"))
                 live.update(grid)
 
-                if recovered:
-                    time.sleep(3)
-                    break
                 time.sleep(2)
     finally:
         stop_event.set()
-        # Disable chaos mode
+        # Restore maxReplicas so autoscale works again
         try:
-            requests.delete(f"{GRID_API_URL}/chaos/latency", timeout=5)
+            subprocess.run(
+                f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} '
+                f'--max-replicas 3 --output none',
+                shell=True, timeout=30, capture_output=True, text=True
+            )
         except Exception:
             pass
 
-    show_result("📈", "LOAD SPIKE ANALYZED", [
-        "SRE Agent (incident-handler):",
-        "- Detected high-latency alert on grid-status-api",
-        "- Investigated recent deployments — none found",
-        "- Analyzed code paths — no regressions detected",
-        "- Correlated with news event: Sector 7 transformer failure",
-        "- VERDICT: No bug — organic traffic spike at 50x volume",
+    show_result("📈", "LOAD SPIKE — SRE AGENT INVESTIGATING", [
+        "SRE Agent (autonomous via HTTP trigger):",
+        "- Synthetic test detected 9s+ response time on grid-status-api",
+        "- Agent triggered autonomously to investigate and resolve",
+        "- Agent will query App Insights, check CPU, replica count",
+        "- Expected RCA: single 0.25 vCPU replica saturated by traffic",
+        "- Expected fix: scale replicas, increase CPU, add autoscale",
         "",
-        "Recommendations:",
-        "- Scale grid-status-api to 5 replicas (from 2)",
-        "- Enable CDN caching for /regions (TTL 30s)",
-        "- Add auto-scale rule at 70% CPU threshold",
-        "",
-        "Check sre.azure.com for the full analysis.",
+        "Check sre.azure.com for the live investigation thread.",
     ])
 
 # ═══════════════════════════════════════════════════════════
@@ -1238,10 +1340,10 @@ def scenario_reset():
     reset_cmds = [
         f'az containerapp update -n ca-{WORKLOAD}-outage -g rg-{WORKLOAD} --remove-env-vars FORCE_ERROR --output none 2>nul',
         f'az containerapp update -n ca-{WORKLOAD}-meter -g rg-{WORKLOAD} --remove-env-vars SIMULATE_OOM --output none 2>nul',
-        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --output none 2>nul',
+        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --max-replicas 3 --output none 2>nul',
         f'az containerapp update -n ca-{WORKLOAD}-notify -g rg-{WORKLOAD} --set-env-vars REQUIRED_CONFIG=enabled --output none 2>nul',
         f'az webapp config appsettings set --name app-{WORKLOAD}-portal --resource-group rg-{WORKLOAD} --settings WEBSITES_PORT=8080 --output none 2>nul',
-        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunPowerShellScript --scripts "Remove-Item C:\\SCADA\\Logs\\*.log, C:\\SCADA\\Logs\\*.tmp, C:\\SCADA\\Backups\\*.bak -Force -ErrorAction SilentlyContinue; Write-Output CLEANED" --output none 2>nul',
+        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunPowerShellScript --scripts "Remove-Item C:\\data\\scada-backups\\*.bak -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\grid-logs\\*.log -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\grid-logs\\*.tmp -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\meter-data\\*.dat -Force -ErrorAction SilentlyContinue; Write-Output CLEANED" --output none 2>nul',
     ]
     for cmd in reset_cmds:
         try:
@@ -1289,6 +1391,8 @@ def _system_status_panel():
             lines.append(f"  {name:<16} [green]● UP[/]   {ms:.0f}ms")
         elif code == 0:
             lines.append(f"  {name:<16} [dim]● N/A[/]")
+        elif code == 404 and "notify" in url.lower():
+            lines.append(f"  {name:<16} [yellow]● DOWN[/]  [dim](config scenario)[/]")
         else:
             lines.append(f"  {name:<16} [red]● {code}[/]  {ms:.0f}ms")
     return Panel("\n".join(lines), title="[bold]System Status[/]",
