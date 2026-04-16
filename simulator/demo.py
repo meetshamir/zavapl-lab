@@ -1555,6 +1555,23 @@ def _system_status_panel():
             lines.append(f"  {name:<16} [yellow]● DOWN[/]  [dim](config scenario)[/]")
         else:
             lines.append(f"  {name:<16} [red]● {code}[/]  {ms:.0f}ms")
+
+    # ServiceNow PDI status
+    try:
+        r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
+                         auth=(SN_USER, SN_PASS),
+                         headers={"Accept": "application/json"}, timeout=5)
+        if r.status_code == 200:
+            lines.append(f"  {'ServiceNow':<16} [green]● AWAKE[/]")
+        elif r.status_code == 401:
+            lines.append(f"  {'ServiceNow':<16} [red]● AUTH ERR[/]")
+        else:
+            lines.append(f"  {'ServiceNow':<16} [yellow]● {r.status_code}[/]")
+    except requests.exceptions.Timeout:
+        lines.append(f"  {'ServiceNow':<16} [yellow]● HIBERNATING[/]")
+    except Exception:
+        lines.append(f"  {'ServiceNow':<16} [dim]● N/A[/]")
+
     return Panel("\n".join(lines), title="[bold]System Status[/]",
                  border_style="dim", width=56)
 
