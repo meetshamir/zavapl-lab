@@ -13,7 +13,7 @@ spec:
 
     SERVICENOW_URL = "https://dev268981.service-now.com"
     SERVICENOW_USER = "admin"
-    SERVICENOW_PASS = "ME@6SkW2d*lc"
+    SERVICENOW_PASS = "<SET_VIA_SRE_AGENT_PORTAL>"
 
     def update_servicenow_work_notes(incident_id: str, work_note: str) -> dict:
         try:

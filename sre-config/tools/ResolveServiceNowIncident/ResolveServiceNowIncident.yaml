@@ -13,7 +13,7 @@ spec:
 
     SERVICENOW_URL = "https://dev268981.service-now.com"
     SERVICENOW_USER = "admin"
-    SERVICENOW_PASS = "ME@6SkW2d*lc"
+    SERVICENOW_PASS = "<SET_VIA_SRE_AGENT_PORTAL>"
 
     def resolve_servicenow_incident(incident_id: str, resolution_notes: str, close_code: str = "Solved (Permanently)") -> dict:
         try:

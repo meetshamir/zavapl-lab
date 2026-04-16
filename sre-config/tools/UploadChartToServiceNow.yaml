@@ -1,0 +1,83 @@
+api_version: azuresre.ai/v2
+kind: ExtendedAgentTool
+metadata:
+  name: UploadChartToServiceNow
+spec:
+  type: PythonTool
+  connector: ''
+  toolMode: Auto
+  description: |-
+    Upload a base64-encoded chart image to a ServiceNow incident as an attachment. Use this after generating a chart with PlotTimeSeriesData or PlotAreaChartWithCorrelation to attach the visual evidence to the incident. Accepts either an incident number (e.g. INC0010042) or a sys_id.
+  functionCode: |-
+    import requests
+    import base64
+
+    SERVICENOW_URL = "https://dev268981.service-now.com"
+    SERVICENOW_USER = "admin"
+    SERVICENOW_PASS = "ME@6SkW2d*lc"
+
+    def main(incident_id: str, image_base64: str, filename: str = "sre-agent-chart.png") -> dict:
+        try:
+            sys_id = incident_id
+            if incident_id.startswith("INC"):
+                lookup = requests.get(
+                    f"{SERVICENOW_URL}/api/now/table/incident",
+                    params={"sysparm_query": f"number={incident_id}", "sysparm_limit": "1", "sysparm_fields": "sys_id"},
+                    auth=(SERVICENOW_USER, SERVICENOW_PASS),
+                    headers={"Accept": "application/json"},
+                    timeout=10
+                )
+                lookup.raise_for_status()
+                results = lookup.json().get("result", [])
+                if not results:
+                    return {"success": False, "error": f"Incident {incident_id} not found"}
+                sys_id = results[0]["sys_id"]
+
+            if "," in image_base64:
+                image_base64 = image_base64.split(",", 1)[1]
+
+            image_bytes = base64.b64decode(image_base64)
+
+            response = requests.post(
+                f"{SERVICENOW_URL}/api/now/attachment/file",
+                params={
+                    "table_name": "incident",
+                    "table_sys_id": sys_id,
+                    "file_name": filename
+                },
+                auth=(SERVICENOW_USER, SERVICENOW_PASS),
+                headers={
+                    "Content-Type": "image/png",
+                    "Accept": "application/json"
+                },
+                data=image_bytes,
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json().get("result", {})
+            return {
+                "success": True,
+                "attachment_id": result.get("sys_id", ""),
+                "download_link": result.get("download_link", ""),
+                "message": f"Chart uploaded to {incident_id} as {filename}"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+  timeoutSeconds: 240
+  authScopes: 
+  parameters:
+  - name: incident_id
+    type: string
+    description: |-
+      ServiceNow incident number (e.g. INC0010042) or sys_id
+    required: true
+  - name: image_base64
+    type: string
+    description: |-
+      Base64-encoded PNG image data from PlotTimeSeriesData or other chart tools
+    required: true
+  - name: filename
+    type: string
+    description: |-
+      Filename for the attachment (default: sre-agent-chart.png)
+    required: false

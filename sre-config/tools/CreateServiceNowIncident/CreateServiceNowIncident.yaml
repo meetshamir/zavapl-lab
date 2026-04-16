@@ -13,7 +13,7 @@ spec:
 
     SERVICENOW_URL = "https://dev268981.service-now.com"
     SERVICENOW_USER = "admin"
-    SERVICENOW_PASS = "ME@6SkW2d*lc"
+    SERVICENOW_PASS = "<SET_VIA_SRE_AGENT_PORTAL>"
 
     def create_servicenow_incident(short_description: str, description: str, urgency: str = "2", impact: str = "2", category: str = "Software") -> dict:
         try:

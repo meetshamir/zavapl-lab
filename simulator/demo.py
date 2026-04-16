@@ -1316,6 +1316,7 @@ def scenario_reset():
     console.print(Panel(
         "\n  Restoring all services to healthy baseline.\n"
         "  This will:\n"
+        "  - Wake up ServiceNow PDI (if sleeping)\n"
         "  - Reset all Container App environment variables\n"
         "  - Reset grid-status-api replicas and CPU to baseline\n"
         "  - Disable chaos mode (if active)\n"
@@ -1329,6 +1330,19 @@ def scenario_reset():
     console.input("[dim]  Press Enter to proceed...[/]")
 
     console.print("\n[bold cyan]  ▶ Resetting all services...[/]")
+
+    # Wake up ServiceNow PDI (dev instances sleep after inactivity)
+    console.print("[dim]  Waking up ServiceNow PDI...[/]", end="")
+    try:
+        r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
+                         auth=(SN_USER, SN_PASS), headers={"Accept": "application/json"}, timeout=30)
+        if r.status_code == 200:
+            console.print("[green] ✓ awake[/]")
+        else:
+            console.print(f"[yellow] ⚠ status {r.status_code} (may need manual wake)[/]")
+    except Exception:
+        console.print("[yellow] ⚠ unreachable (wake it at developer.servicenow.com)[/]")
+
     # Reset Container App env vars directly (no bash needed)
     reset_cmds = [
         f'az containerapp update -n ca-{WORKLOAD}-outage -g rg-{WORKLOAD} --remove-env-vars FORCE_ERROR --output none 2>nul',

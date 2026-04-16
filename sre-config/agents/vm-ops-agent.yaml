@@ -27,7 +27,12 @@ spec:
     - High CPU → identify the process, restart service
     - Memory → check for leaks, restart or resize VM
 
-    STEP 4 — DOCUMENT
+    STEP 4 — VISUALIZE & DOCUMENT
+    Create a correlation chart using PlotTimeSeriesData showing the disk
+    usage trend (% Free Space over time) during the incident window.
+    Upload the chart to ServiceNow using UploadChartToServiceNow.
+    Include the SNOW link: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
+
     Use servicenow-incident-mgmt skill to create and update a SNOW
     ticket with the full investigation trail.
 
@@ -40,6 +45,7 @@ spec:
   - UpdateServiceNowWorkNotes
   - ResolveServiceNowIncident
   - LookupServiceNowIncident
+  - UploadChartToServiceNow
   mcpTools: []
   allowParallelToolCalls: true
   maxReflectionCount: 0

@@ -50,6 +50,7 @@ spec:
   - UpdateServiceNowWorkNotes
   - ResolveServiceNowIncident
   - LookupServiceNowIncident
+  - UploadChartToServiceNow
   mcpTools: []
   allowParallelToolCalls: true
   maxReflectionCount: 0
