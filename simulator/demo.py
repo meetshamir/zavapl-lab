@@ -99,10 +99,10 @@ def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
         try:
             r = subprocess.run(
                 'az vm show -g rg-powergrid -n vm-powergrid-arc --show-details --query powerState -o tsv',
-                shell=True, capture_output=True, text=True, timeout=15)
+                shell=True, capture_output=True, text=True, timeout=30)
             state = r.stdout.strip()
             if state != "VM running":
-                console.print(f" {state} — starting VM...", end="")
+                console.print(f" [yellow]{state}[/] — starting VM (this may take 1-2 min)...", end="")
                 subprocess.run(
                     'az vm start --resource-group rg-powergrid --name vm-powergrid-arc -o none',
                     shell=True, timeout=300)
@@ -1317,6 +1317,10 @@ def scenario_reset():
         "\n  Restoring all services to healthy baseline.\n"
         "  This will:\n"
         "  - Reset all Container App environment variables\n"
+        "  - Reset grid-status-api replicas and CPU to baseline\n"
+        "  - Disable chaos mode (if active)\n"
+        "  - Clean disk pressure files on VM\n"
+        "  - Start VM if stopped\n"
         "  - Restore App Service port configuration\n"
         "  - Validate all service health endpoints\n",
         title="[bold]🧹 RESET ALL — HEALTHY BASELINE[/]",
@@ -1329,16 +1333,52 @@ def scenario_reset():
     reset_cmds = [
         f'az containerapp update -n ca-{WORKLOAD}-outage -g rg-{WORKLOAD} --remove-env-vars FORCE_ERROR --output none 2>nul',
         f'az containerapp update -n ca-{WORKLOAD}-meter -g rg-{WORKLOAD} --remove-env-vars SIMULATE_OOM --output none 2>nul',
-        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --max-replicas 3 --output none 2>nul',
+        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --min-replicas 1 --max-replicas 5 --cpu 0.25 --memory 0.5Gi --output none 2>nul',
         f'az containerapp update -n ca-{WORKLOAD}-notify -g rg-{WORKLOAD} --set-env-vars REQUIRED_CONFIG=enabled --output none 2>nul',
         f'az webapp config appsettings set --name app-{WORKLOAD}-portal --resource-group rg-{WORKLOAD} --settings WEBSITES_PORT=8080 --output none 2>nul',
-        'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc --command-id RunPowerShellScript --scripts "Remove-Item C:\\data\\scada-backups\\*.bak -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\grid-logs\\*.log -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\grid-logs\\*.tmp -Force -ErrorAction SilentlyContinue; Remove-Item C:\\data\\meter-data\\*.dat -Force -ErrorAction SilentlyContinue; Write-Output CLEANED" --output none 2>nul',
     ]
     for cmd in reset_cmds:
         try:
-            subprocess.run(cmd, shell=True, timeout=30)
+            subprocess.run(cmd, shell=True, timeout=60)
         except Exception:
             pass
+
+    # Disable chaos mode on grid-status-api (in case scenario 5 left it on)
+    console.print("[dim]  Disabling chaos mode on grid-status-api...[/]")
+    try:
+        requests.delete(f"{GRID_API_URL}/chaos/latency", timeout=5)
+    except Exception:
+        pass
+
+    # Ensure VM is running and clean disk pressure files
+    console.print("[dim]  Checking VM status...[/]")
+    try:
+        vm_state = subprocess.run(
+            'az vm get-instance-view --name vm-powergrid-arc --resource-group rg-powergrid '
+            '--query "instanceView.statuses[1].displayStatus" -o tsv',
+            shell=True, capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        if "running" not in vm_state.lower():
+            console.print("[dim]  Starting VM...[/]")
+            subprocess.run(
+                'az vm start --name vm-powergrid-arc --resource-group rg-powergrid --no-wait',
+                shell=True, timeout=30, capture_output=True
+            )
+            time.sleep(30)  # wait for VM to boot
+        console.print("[dim]  Cleaning disk pressure files on VM...[/]")
+        subprocess.run(
+            'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc '
+            '--command-id RunPowerShellScript --scripts '
+            '"Remove-Item C:\\data\\scada-backups\\*.bak -Force -ErrorAction SilentlyContinue; '
+            'Remove-Item C:\\data\\grid-logs\\*.log -Force -ErrorAction SilentlyContinue; '
+            'Remove-Item C:\\data\\grid-logs\\*.tmp -Force -ErrorAction SilentlyContinue; '
+            'Remove-Item C:\\data\\meter-data\\*.dat -Force -ErrorAction SilentlyContinue; '
+            'Write-Output CLEANED" --output none 2>nul',
+            shell=True, timeout=120
+        )
+        console.print("[green]  ✓ VM disk cleaned[/]")
+    except Exception:
+        console.print("[yellow]  ⚠ VM cleanup skipped (VM may be stopped)[/]")
     console.print("[green]  ✓ All services reset[/]\n")
 
     console.print("[bold cyan]  ▶ Validating services...[/]\n")
