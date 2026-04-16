@@ -37,6 +37,10 @@ spec:
 
     Then:
     - Use servicenow-incident-mgmt skill to create a SNOW ticket
+    - Use PlotAreaChartWithCorrelation to create ONE chart showing request
+      volume + error rate before/after the deployment, marking the deploy time
+    - Upload the chart to the SNOW ticket using UploadChartToServiceNow
+    - Include the SNOW link in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
     - Use deployment-rollback skill to revert to the previous revision
     - Use CreateFixPullRequest to create a fix PR in ADO
     - Validate the fix

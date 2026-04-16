@@ -9,6 +9,7 @@ tools:
   - UpdateServiceNowWorkNotes
   - ResolveServiceNowIncident
   - LookupServiceNowIncident
+  - UploadChartToServiceNow
 ---
 
 # ServiceNow Incident Management
@@ -22,6 +23,7 @@ Use it to create, update, and resolve incidents with a complete audit trail.
 - You need to document findings during an investigation
 - A remediation has been completed and needs to be recorded
 - An incident needs to be resolved with root cause and fix details
+- You need to attach a metrics chart to an incident
 
 ## Workflow
 
@@ -33,6 +35,7 @@ Use it to create, update, and resolve incidents with a complete audit trail.
    - impact: 1 (High), 2 (Medium), 3 (Low)
    - category: "Software"
 2. Save the returned incident number (INC00XXXXX) for subsequent updates
+3. Include the incident URL in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
 
 ### Adding Work Notes (Audit Trail)
 Use UpdateServiceNowWorkNotes at each investigation phase:
@@ -52,6 +55,13 @@ Use LookupServiceNowIncident to:
 - Check if a related incident already exists before creating a duplicate
 - Search by short description or keywords to find existing tickets
 Note: Native ServiceNow tools now accept INC numbers directly — no sys_id translation needed.
+
+### Attaching a Metrics Chart
+After generating a chart with PlotTimeSeriesData or PlotAreaChartWithCorrelation:
+1. Use UploadChartToServiceNow with the incident number and the base64 image data
+2. Use a descriptive filename (e.g. "latency-trend-incident.png" or "disk-usage-chart.png")
+3. The chart will appear in the incident's Attachments tab
+4. Add a work note referencing the attachment: "Metrics chart attached — shows [description]"
 
 # ServiceNow Incident Report Template
 
