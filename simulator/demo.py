@@ -145,6 +145,11 @@ SN_URL  = os.environ.get("POWERGRID_SN_URL",  "https://dev268981.service-now.com
 SN_USER = os.environ.get("POWERGRID_SN_USER", "admin")
 SN_PASS = os.environ.get("POWERGRID_SN_PASS", "ME@6SkW2d*lc")
 
+SRE_AGENT_THREAD_BASE = (
+    "https://sre.azure.com/agents/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254"
+    "/resourceGroups/rg-powergrid/providers/Microsoft.App/agents/sre-zavapower-ops/views/thread"
+)
+
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
 
@@ -438,15 +443,21 @@ def poll_alert_by_id(alert_id, required_condition="Resolved"):
 
 def poll_agent_thread(keyword, since_time):
     """Check if SRE Agent has a thread matching keyword created since since_time.
-    Returns (found: bool, thread_title: str or None)."""
+    Returns (found: bool, thread_id: str or None)."""
     try:
         result = subprocess.run(
-            'srectl thread list --quiet',
-            shell=True, timeout=10, capture_output=True, text=True
+            ["srectl", "thread", "list", "--quiet"],
+            capture_output=True, text=True, timeout=10
         )
         for line in result.stdout.splitlines():
             if keyword.lower() in line.lower() and since_time[:10] in line:
-                return True, line.strip()
+                # Try to extract thread ID (UUID format) from the line
+                parts = line.strip().split()
+                for p in parts:
+                    p = p.strip()
+                    if len(p) == 36 and p.count("-") == 4:
+                        return True, p
+                return True, None
     except Exception:
         pass
     return False, None
@@ -499,10 +510,13 @@ def monitor_health(url, path, service_name, agent_name,
             # Poll for agent thread
             if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
                 last_agent_poll = now
-                found, _ = poll_agent_thread(service_name, sim_start)
+                found, thread_id = poll_agent_thread(service_name, sim_start)
                 if found:
                     agent_started = True
                     timeline.add(f"🤖 {agent_name} picked up — investigating", "yellow bold")
+                    if thread_id:
+                        thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
+                        timeline.add(f"🔗 [link={thread_url}]View agent thread[/link]", "cyan")
 
             code, ms = health_check(url, path)
             healthy = healthy_fn(code, ms)
@@ -823,11 +837,13 @@ def scenario_disk():
             # Phase B: Poll for SRE Agent thread
             if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
                 last_agent_poll = now
-                found, _ = poll_agent_thread("disk", sim_start)
+                found, thread_id = poll_agent_thread("disk", sim_start)
                 if found:
                     agent_started = True
                     timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
-                    timeline.add("🔗 [link=https://sre.azure.com]View agent thread at sre.azure.com[/link]", "cyan")
+                    if thread_id:
+                        thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
+                        timeline.add(f"🔗 [link={thread_url}]View agent thread[/link]", "cyan")
 
             # Phase C: Poll for same alert to become RESOLVED
             if alert_fired and tracked_alert_id and not alert_resolved and (now - last_resolve_poll).seconds >= 10:
@@ -1114,7 +1130,8 @@ def scenario_load():
                                 agent_thread_id = resp.get("threadId", "")
                                 timeline.add("🤖 SRE Agent investigating (autonomous)", "yellow bold")
                                 if agent_thread_id:
-                                    timeline.add(f"📋 Thread: {agent_thread_id[:8]}...", "dim")
+                                    thread_url = f"{SRE_AGENT_THREAD_BASE}/{agent_thread_id}"
+                                    timeline.add(f"🔗 [link={thread_url}]View agent thread[/link]", "cyan")
                             else:
                                 timeline.add(f"⚠️ Trigger failed: HTTP {r.status_code}", "red")
                         except Exception as e:
