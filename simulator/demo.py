@@ -816,6 +816,9 @@ def scenario_disk():
                     alert_fired = True
                     tracked_alert_id = aid
                     timeline.add("🚨 ALERT FIRED — alert-powergrid-disk-pressure (Sev2)", "red bold")
+                    # Build clickable Azure portal link
+                    alert_portal_url = f"https://portal.azure.com/#blade/Microsoft_Azure_Monitoring/AlertDetailsTemplateBlade/alertId/{aid.replace('/', '%2F')}"
+                    timeline.add(f"🔗 [link={alert_portal_url}]View alert in Azure Portal[/link]", "cyan")
 
             # Phase B: Poll for SRE Agent thread
             if alert_fired and not agent_started and (now - last_agent_poll).seconds >= 10:
@@ -824,6 +827,7 @@ def scenario_disk():
                 if found:
                     agent_started = True
                     timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
+                    timeline.add("🔗 [link=https://sre.azure.com]View agent thread at sre.azure.com[/link]", "cyan")
 
             # Phase C: Poll for same alert to become RESOLVED
             if alert_fired and tracked_alert_id and not alert_resolved and (now - last_resolve_poll).seconds >= 10:
