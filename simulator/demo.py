@@ -38,6 +38,97 @@ import requests
 
 import msvcrt
 
+# ── Expected Azure subscription (catches wrong-account issues) ──
+EXPECTED_SUBSCRIPTION = "e964602f-6afc-4cc7-ba6b-3a796008e254"
+
+# ── Centralized az CLI runner ───────────────────────────────
+def run_az(args, timeout=30, retries=1, parse_json=False, quiet=False):
+    """Run an az CLI command reliably. Returns (success, stdout, stderr).
+    
+    - Uses shell=False with arg list for safe quoting
+    - Kills process tree on timeout
+    - Retries on transient failures (throttle / conflict)
+    - Parses JSON output if requested
+    """
+    if isinstance(args, str):
+        # Split string command into list, but keep az.cmd as first arg
+        import shlex
+        args = args.split()
+    
+    last_err = ""
+    for attempt in range(retries + 1):
+        try:
+            r = subprocess.run(
+                args, capture_output=True, text=True, timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+            )
+            if r.returncode == 0:
+                out = r.stdout.strip()
+                if parse_json and out:
+                    try:
+                        return True, json.loads(out), ""
+                    except json.JSONDecodeError:
+                        return True, out, ""
+                return True, out, ""
+            last_err = r.stderr.strip() or r.stdout.strip()
+            # Retry on throttle (429) or conflict
+            if any(x in last_err.lower() for x in ["throttl", "429", "conflict", "too many requests"]):
+                if attempt < retries:
+                    time.sleep(2 ** attempt)
+                    continue
+            return False, "", last_err
+        except subprocess.TimeoutExpired as e:
+            # Kill the process tree
+            if e.cmd and hasattr(e, 'args'):
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(e.args)],
+                                   capture_output=True, timeout=5)
+                except Exception:
+                    pass
+            last_err = f"Command timed out after {timeout}s"
+            if attempt < retries:
+                continue
+            return False, "", last_err
+        except FileNotFoundError:
+            return False, "", "az CLI not found. Install from https://aka.ms/installazurecli"
+        except Exception as e:
+            return False, "", str(e)
+    return False, "", last_err
+
+
+# ── SRE Agent Token Manager ────────────────────────────────
+class TokenManager:
+    """Manages SRE Agent access tokens with auto-refresh."""
+    
+    def __init__(self):
+        self._token = None
+        self._expires_at = 0  # epoch seconds
+    
+    def get_token(self):
+        """Get a valid token, refreshing if expired or close to expiry."""
+        now = time.time()
+        # Refresh if token expires within 5 minutes
+        if self._token and (self._expires_at - now) > 300:
+            return self._token
+        
+        ok, out, err = run_az(
+            ["az", "account", "get-access-token", "--resource",
+             "https://azuresre.ai", "--query", "accessToken", "-o", "tsv"],
+            timeout=30
+        )
+        if ok and out:
+            self._token = out
+            self._expires_at = now + 3600  # tokens are typically 1h
+            return self._token
+        return None
+    
+    @property
+    def is_valid(self):
+        return self._token and (self._expires_at - time.time()) > 300
+
+_token_mgr = TokenManager()
+
+
 # ── Configuration ───────────────────────────────────────────
 WORKLOAD    = os.environ.get("POWERGRID_WORKLOAD_NAME", "powergrid")
 ADO_ORG     = "sreagentlab"
@@ -855,7 +946,7 @@ def scenario_load():
         "6. Agent finds NO code defect — scales infrastructure to resolve")
 
 
-    if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)]):
+    if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)], needs_token=True):
         console.input("[dim]  Press Enter...[/]"); return
 
     # Cap replicas to 1 so autoscale doesn't rescue the service
@@ -988,6 +1079,8 @@ def scenario_load():
                                 "thresholdMs": 1000,
                                 "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                             })
+                            # Refresh token if close to expiry
+                            sre_token = _token_mgr.get_token() or sre_token
                             r = requests.post(SRE_TRIGGER_URL,
                                 headers={"Authorization": f"Bearer {sre_token}", "Content-Type": "application/json"},
                                 data=payload, timeout=15)
@@ -1139,6 +1232,9 @@ def scenario_servicenow():
         "4. Agent fills laptop request form via Browser Operator\n"
         "5. Agent updates and resolves the ServiceNow ticket\n"
         "6. Agent sends confirmation email to the employee")
+
+    if not preflight_check(needs_snow=True):
+        console.input("[dim]  Press Enter...[/]"); return
 
     ticket_id = None
     ticket_num = None
