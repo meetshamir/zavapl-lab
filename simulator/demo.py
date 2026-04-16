@@ -724,17 +724,18 @@ def scenario_disk():
         ps_script = (
             "New-Item -ItemType Directory -Path C:\\data\\grid-logs, C:\\data\\scada-backups, C:\\data\\meter-data -Force | Out-Null; "
             "$disk = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"; "
+            "$totalGB = [math]::Floor($disk.Size / 1073741824); "
             "$freeGB = [math]::Floor($disk.FreeSpace / 1073741824); "
-            "$fillGB = $freeGB - 2; "
+            # Target: leave only 8% free (well under 15% threshold)
+            "$targetFreeGB = [math]::Floor($totalGB * 0.08); "
+            "$fillGB = $freeGB - $targetFreeGB; "
             "if ($fillGB -lt 5) { Write-Output ERROR_NOT_ENOUGH_SPACE; exit 1 }; "
-            "$scadaBytes = [math]::Floor($fillGB * 0.35) * 1073741824; "
-            "$logBytes = [math]::Floor($fillGB * 0.30) * 1073741824; "
-            "$meterBytes = [math]::Floor($fillGB * 0.20) * 1073741824; "
-            "$tmpBytes = ($fillGB - [math]::Floor($fillGB * 0.35) - [math]::Floor($fillGB * 0.30) - [math]::Floor($fillGB * 0.20)) * 1073741824; "
+            "Write-Output \\\"FILLING: ${fillGB}GB to leave ${targetFreeGB}GB free (${totalGB}GB total)\\\"; "
+            # Create fewer, larger files to avoid rounding loss
+            "$mainBytes = [math]::Floor($fillGB * 0.70) * 1073741824; "
+            "$scadaBytes = [math]::Floor($fillGB * 0.30) * 1073741824; "
+            "fsutil file createnew C:\\data\\grid-logs\\grid-manager.log $mainBytes; "
             "fsutil file createnew C:\\data\\scada-backups\\scada-full-2026-04-01.bak $scadaBytes; "
-            "fsutil file createnew C:\\data\\grid-logs\\grid-manager.log $logBytes; "
-            "fsutil file createnew C:\\data\\meter-data\\interval-reads-2026-Q1.dat $meterBytes; "
-            "fsutil file createnew C:\\data\\grid-logs\\core-dump-20260401.tmp $tmpBytes; "
             "Write-Output DISK_FILLED"
         )
         result = subprocess.run(
