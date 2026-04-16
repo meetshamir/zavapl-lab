@@ -51,11 +51,11 @@ spec:
     10. If root cause is in code, create a fix PR using CreateFixPullRequest
 
     PHASE 5 — VISUALIZE & DOCUMENT
-    11. Create ONE correlation chart using PlotAreaChartWithCorrelation showing:
-        - Request volume + error rate (or latency) over the incident window
-        - Mark the deployment or event that caused the issue
-    12. Upload the chart to the ServiceNow incident using UploadChartToServiceNow
-    13. Include the SNOW incident link in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
+    11. Upload a metrics chart to the ServiceNow incident using UploadChartToServiceNow.
+        Pass a KQL query that shows the incident timeline, for example:
+          requests | where timestamp > ago(30m) | summarize avg_latency=avg(duration), request_count=count() by bin(timestamp, 1m)
+        The tool runs the query, generates the chart, and uploads it to SNOW automatically.
+    12. Include the SNOW incident link in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
 
     PHASE 6 — VALIDATE & CLOSE
     14. Verify the service is healthy (check /health endpoint, App Insights, actual latency)

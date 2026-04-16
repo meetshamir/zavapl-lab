@@ -28,9 +28,9 @@ spec:
     - Memory → check for leaks, restart or resize VM
 
     STEP 4 — VISUALIZE & DOCUMENT
-    Create a correlation chart using PlotTimeSeriesData showing the disk
-    usage trend (% Free Space over time) during the incident window.
-    Upload the chart to ServiceNow using UploadChartToServiceNow.
+    Upload a disk usage chart to the SNOW incident using UploadChartToServiceNow.
+    Pass a KQL query like:
+      Perf | where Computer == 'gridmgmt01' and CounterName == '% Free Space' and InstanceName == 'C:' | summarize FreePercent=avg(CounterValue) by bin(TimeGenerated, 1m) | order by TimeGenerated asc
     Include the SNOW link: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
 
     Use servicenow-incident-mgmt skill to create and update a SNOW

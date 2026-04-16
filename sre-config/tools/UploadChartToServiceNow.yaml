@@ -7,17 +7,115 @@ spec:
   connector: ''
   toolMode: Auto
   description: |-
-    Upload a base64-encoded chart image to a ServiceNow incident as an attachment. Use this after generating a chart with PlotTimeSeriesData or PlotAreaChartWithCorrelation to attach the visual evidence to the incident. Accepts either an incident number (e.g. INC0010042) or a sys_id.
+    Generate a metrics chart and upload it to a ServiceNow incident. Runs a KQL query against Log Analytics, plots the results using matplotlib, and uploads the PNG to the incident as an attachment. The agent does NOT need to pass base64 data — this tool handles everything end-to-end.
   functionCode: |-
     import requests
+    import subprocess
+    import json
+    import io
     import base64
+    import tempfile
+    import os
 
     SERVICENOW_URL = "https://dev268981.service-now.com"
     SERVICENOW_USER = "admin"
     SERVICENOW_PASS = "ME@6SkW2d*lc"
+    SUBSCRIPTION = "e964602f-6afc-4cc7-ba6b-3a796008e254"
+    WORKSPACE_NAME = "law-powergrid"
+    RESOURCE_GROUP = "rg-powergrid"
 
-    def main(incident_id: str, image_base64: str, filename: str = "sre-agent-chart.png") -> dict:
+    def main(incident_id: str, kql_query: str, chart_title: str = "Incident Metrics", filename: str = "sre-agent-chart.png") -> dict:
         try:
+            # Step 1: Get workspace ID
+            r = subprocess.run(
+                ["az", "monitor", "log-analytics", "workspace", "show",
+                 "-g", RESOURCE_GROUP, "-n", WORKSPACE_NAME,
+                 "--query", "customerId", "-o", "tsv"],
+                capture_output=True, text=True, timeout=15
+            )
+            if r.returncode != 0:
+                return {"success": False, "error": f"Workspace lookup failed: {r.stderr[:100]}"}
+            ws_id = r.stdout.strip()
+
+            # Step 2: Run KQL query
+            r = subprocess.run(
+                ["az", "monitor", "log-analytics", "query",
+                 "-w", ws_id, "--analytics-query", kql_query, "-o", "json"],
+                capture_output=True, text=True, timeout=30
+            )
+            if r.returncode != 0:
+                return {"success": False, "error": f"KQL query failed: {r.stderr[:100]}"}
+            rows = json.loads(r.stdout)
+
+            if not rows:
+                return {"success": False, "error": "Query returned no data"}
+
+            # Step 3: Plot chart with matplotlib
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                import matplotlib.dates as mdates
+                from datetime import datetime as dt
+            except ImportError:
+                return {"success": False, "error": "matplotlib not available"}
+
+            # Auto-detect time column and value columns
+            cols = list(rows[0].keys())
+            time_col = None
+            val_cols = []
+            skip = {"TableName", "Type"}
+            for c in cols:
+                if c in skip:
+                    continue
+                sample = str(rows[0].get(c, ""))
+                if "T" in sample and ("Z" in sample or "+" in sample):
+                    time_col = c
+                else:
+                    try:
+                        float(rows[0][c])
+                        val_cols.append(c)
+                    except (ValueError, TypeError):
+                        pass
+
+            if not time_col or not val_cols:
+                return {"success": False, "error": f"Cannot auto-detect columns. Found: {cols}"}
+
+            times = []
+            for row in rows:
+                t = str(row[time_col]).replace("Z", "+00:00")
+                try:
+                    times.append(dt.fromisoformat(t))
+                except Exception:
+                    times.append(None)
+
+            fig, ax1 = plt.subplots(figsize=(10, 4))
+            colors = ["#0078D4", "#E74C3C", "#2ECC71", "#F39C12"]
+            for i, vc in enumerate(val_cols[:4]):
+                vals = [float(row.get(vc, 0) or 0) for row in rows]
+                c = colors[i % len(colors)]
+                if i == 0:
+                    ax1.plot(times, vals, color=c, linewidth=2, label=vc)
+                    ax1.set_ylabel(vc, color=c)
+                elif i == 1:
+                    ax2 = ax1.twinx()
+                    ax2.plot(times, vals, color=c, linewidth=2, linestyle="--", label=vc)
+                    ax2.set_ylabel(vc, color=c)
+                else:
+                    ax1.plot(times, vals, color=c, linewidth=1.5, label=vc)
+
+            ax1.set_title(chart_title, fontsize=13, fontweight="bold")
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            fig.autofmt_xdate()
+            fig.legend(loc="upper left", bbox_to_anchor=(0.1, 0.95), fontsize=8)
+            fig.tight_layout()
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            plt.close(fig)
+            image_bytes = buf.getvalue()
+
+            # Step 4: Resolve INC to sys_id
             sys_id = incident_id
             if incident_id.startswith("INC"):
                 lookup = requests.get(
@@ -33,23 +131,12 @@ spec:
                     return {"success": False, "error": f"Incident {incident_id} not found"}
                 sys_id = results[0]["sys_id"]
 
-            if "," in image_base64:
-                image_base64 = image_base64.split(",", 1)[1]
-
-            image_bytes = base64.b64decode(image_base64)
-
+            # Step 5: Upload to ServiceNow
             response = requests.post(
                 f"{SERVICENOW_URL}/api/now/attachment/file",
-                params={
-                    "table_name": "incident",
-                    "table_sys_id": sys_id,
-                    "file_name": filename
-                },
+                params={"table_name": "incident", "table_sys_id": sys_id, "file_name": filename},
                 auth=(SERVICENOW_USER, SERVICENOW_PASS),
-                headers={
-                    "Content-Type": "image/png",
-                    "Accept": "application/json"
-                },
+                headers={"Content-Type": "image/png", "Accept": "application/json"},
                 data=image_bytes,
                 timeout=30
             )
@@ -59,11 +146,14 @@ spec:
                 "success": True,
                 "attachment_id": result.get("sys_id", ""),
                 "download_link": result.get("download_link", ""),
-                "message": f"Chart uploaded to {incident_id} as {filename}"
+                "chart_data_points": len(rows),
+                "columns_plotted": val_cols[:4],
+                "message": f"Chart '{chart_title}' uploaded to {incident_id}"
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-  timeoutSeconds: 240
+  timeoutSeconds: 300
+  dependencies: 
   authScopes: 
   parameters:
   - name: incident_id
@@ -71,11 +161,16 @@ spec:
     description: |-
       ServiceNow incident number (e.g. INC0010042) or sys_id
     required: true
-  - name: image_base64
+  - name: kql_query
     type: string
     description: |-
-      Base64-encoded PNG image data from PlotTimeSeriesData or other chart tools
+      KQL query to run against Log Analytics. Must return a time column and at least one numeric column. Example: requests | where timestamp > ago(30m) | summarize avg(duration), count() by bin(timestamp, 1m)
     required: true
+  - name: chart_title
+    type: string
+    description: |-
+      Title for the chart (e.g. 'Disk Usage During Incident' or 'Request Latency Spike')
+    required: false
   - name: filename
     type: string
     description: |-

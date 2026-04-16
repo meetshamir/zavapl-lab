@@ -57,11 +57,12 @@ Use LookupServiceNowIncident to:
 Note: Native ServiceNow tools now accept INC numbers directly — no sys_id translation needed.
 
 ### Attaching a Metrics Chart
-After generating a chart with PlotTimeSeriesData or PlotAreaChartWithCorrelation:
-1. Use UploadChartToServiceNow with the incident number and the base64 image data
-2. Use a descriptive filename (e.g. "latency-trend-incident.png" or "disk-usage-chart.png")
-3. The chart will appear in the incident's Attachments tab
+Use UploadChartToServiceNow to generate and attach a chart to the incident:
+1. Pass the incident number and a KQL query that returns time-series data
+2. The tool runs the query, generates the chart (matplotlib), and uploads to SNOW automatically
+3. Use a descriptive chart_title (e.g. "Disk Usage During Incident" or "Request Latency Spike")
 4. Add a work note referencing the attachment: "Metrics chart attached — shows [description]"
+Example KQL: requests | where timestamp > ago(30m) | summarize avg(duration), count() by bin(timestamp, 1m)
 
 # ServiceNow Incident Report Template
 
