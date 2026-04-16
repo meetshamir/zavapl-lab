@@ -143,7 +143,7 @@ PORTAL_URL = os.environ.get("POWERGRID_PORTAL_URL",
     "https://app-powergrid-portal.azurewebsites.net")
 SN_URL  = os.environ.get("POWERGRID_SN_URL",  "https://dev268981.service-now.com")
 SN_USER = os.environ.get("POWERGRID_SN_USER", "admin")
-SN_PASS = os.environ.get("POWERGRID_SN_PASS", "<SET_VIA_ENV>")
+SN_PASS = os.environ.get("POWERGRID_SN_PASS", "ME@6SkW2d*lc")
 
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
