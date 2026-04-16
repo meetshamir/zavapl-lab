@@ -722,21 +722,30 @@ def scenario_disk():
     console.print("[bold cyan]  ▶ Simulating disk pressure on Windows VM...[/]")
     try:
         ps_script = (
-            "New-Item -ItemType Directory -Path C:\\data\\grid-logs, C:\\data\\scada-backups, C:\\data\\meter-data -Force | Out-Null; "
+            # Clean any previous injection files first
+            "Remove-Item C:\\data -Recurse -Force -ErrorAction SilentlyContinue; "
+            "New-Item -ItemType Directory -Path C:\\data\\grid-logs, C:\\data\\scada-backups -Force | Out-Null; "
             "$disk = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"; "
             "$totalGB = [math]::Floor($disk.Size / 1073741824); "
             "$freeGB = [math]::Floor($disk.FreeSpace / 1073741824); "
+            "$freePct = [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 1); "
+            # Already under pressure? Skip filling
+            "if ($freePct -lt 15) { Write-Output \\\"ALREADY_LOW:$freePct\\\"; exit 0 }; "
             # Target: leave only 8% free (well under 15% threshold)
-            "$targetFreeGB = [math]::Floor($totalGB * 0.08); "
+            "$targetFreeGB = [math]::Max(5, [math]::Floor($totalGB * 0.08)); "
             "$fillGB = $freeGB - $targetFreeGB; "
-            "if ($fillGB -lt 5) { Write-Output ERROR_NOT_ENOUGH_SPACE; exit 1 }; "
-            "Write-Output \\\"FILLING: ${fillGB}GB to leave ${targetFreeGB}GB free (${totalGB}GB total)\\\"; "
-            # Create fewer, larger files to avoid rounding loss
+            "if ($fillGB -lt 5) { Write-Output \\\"ERROR_NOT_ENOUGH:free=${freeGB}GB,need=${fillGB}GB\\\"; exit 1 }; "
+            # Create 2 large files (70/30 split)
             "$mainBytes = [math]::Floor($fillGB * 0.70) * 1073741824; "
             "$scadaBytes = [math]::Floor($fillGB * 0.30) * 1073741824; "
-            "fsutil file createnew C:\\data\\grid-logs\\grid-manager.log $mainBytes; "
-            "fsutil file createnew C:\\data\\scada-backups\\scada-full-2026-04-01.bak $scadaBytes; "
-            "Write-Output DISK_FILLED"
+            "fsutil file createnew C:\\data\\grid-logs\\grid-manager.log $mainBytes | Out-Null; "
+            "fsutil file createnew C:\\data\\scada-backups\\scada-full-2026-04-01.bak $scadaBytes | Out-Null; "
+            # Verify the result
+            "$after = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"; "
+            "$afterPct = [math]::Round(($after.FreeSpace / $after.Size) * 100, 1); "
+            "$afterFreeGB = [math]::Round($after.FreeSpace / 1073741824, 1); "
+            "if ($afterPct -lt 15) { Write-Output \\\"DISK_FILLED:${afterPct}pct:${afterFreeGB}GB\\\" } "
+            "else { Write-Output \\\"FILL_INSUFFICIENT:${afterPct}pct:${afterFreeGB}GB\\\" }"
         )
         result = subprocess.run(
             f'az vm run-command invoke --resource-group rg-powergrid '
@@ -745,15 +754,26 @@ def scenario_disk():
             f'--query "value[0].message" -o tsv',
             shell=True, timeout=180, capture_output=True, text=True
         )
-        if "DISK_FILLED" in result.stdout or "createnew" in result.stdout.lower():
-            console.print("[green]  ✓ Disk pressure injected (C:\\data filled dynamically)[/]\n")
-        elif "ERROR_NOT_ENOUGH_SPACE" in result.stdout:
-            console.print("[green]  ✓ Disk already under pressure (< 7 GB free) — skipping fill[/]\n")
-        elif "OperationNotAllowed" in result.stdout or "not running" in result.stdout.lower():
+        out = result.stdout
+        if "DISK_FILLED" in out:
+            # Parse: DISK_FILLED:8.2pct:10.5GB
+            pct = out.split("DISK_FILLED:")[1].split("pct")[0] if "pct" in out else "?"
+            console.print(f"[green]  ✓ Disk pressure injected — {pct}% free (threshold: 15%)[/]\n")
+        elif "ALREADY_LOW" in out:
+            pct = out.split("ALREADY_LOW:")[1].split()[0] if "ALREADY_LOW:" in out else "?"
+            console.print(f"[green]  ✓ Disk already under pressure ({pct}% free) — skipping fill[/]\n")
+        elif "FILL_INSUFFICIENT" in out:
+            pct = out.split("FILL_INSUFFICIENT:")[1].split("pct")[0] if "pct" in out else "?"
+            console.print(f"[red]  ✗ Fill incomplete — {pct}% free (need < 15%). Retry or check disk.[/]")
+            console.input("[dim]  Press Enter...[/]"); return
+        elif "ERROR_NOT_ENOUGH" in out:
+            console.print(f"[red]  ✗ Not enough free space to simulate pressure[/]")
+            console.input("[dim]  Press Enter...[/]"); return
+        elif "OperationNotAllowed" in out or "not running" in out.lower():
             console.print("[red]  ✗ VM is not running![/]")
             console.input("[dim]  Press Enter...[/]"); return
         else:
-            console.print(f"[yellow]  ⚠ Unexpected result: {result.stdout[:100]}[/]")
+            console.print(f"[yellow]  ⚠ Unexpected: {out[:120]}[/]")
             console.input("[dim]  Press Enter...[/]"); return
     except subprocess.TimeoutExpired:
         console.print("[red]  ✗ Script timed out[/]")
