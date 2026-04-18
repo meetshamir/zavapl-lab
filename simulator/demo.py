@@ -211,8 +211,14 @@ def health_check(url, path="/health", timeout=5):
         return 0, 0
 
 # ── Pre-flight Checks ───────────────────────────────────────
-def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
-    """Verify dependencies before a scenario. Returns True if all good."""
+def preflight_check(needs_vm=False, needs_ado=False, needs_services=None,
+                    needs_token=False, needs_snow=False):
+    """Verify dependencies before a scenario. Returns True if all good.
+
+    needs_token : ensure SRE Agent access token can be acquired (HTTP-trigger
+                  scenarios). Token cached by _token_mgr after this.
+    needs_snow  : ensure ServiceNow PDI is awake and reachable.
+    """
     ok = True
 
     # Check Azure CLI login
@@ -275,6 +281,42 @@ def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
             else:
                 console.print(f"[red] ✗ {code or 'unreachable'}[/]")
                 ok = False
+
+    # Check SRE Agent access token (needed by scenarios that POST to httptriggers)
+    if needs_token:
+        console.print("[dim]  Checking SRE Agent token...[/]", end="")
+        try:
+            tok = subprocess.run(
+                'az account get-access-token --resource "https://azuresre.ai" --query accessToken -o tsv',
+                shell=True, capture_output=True, text=True, timeout=30
+            ).stdout.strip()
+            if tok:
+                console.print("[green] ✓ acquired[/]")
+            else:
+                console.print("[red] ✗ empty token (run: az login)[/]")
+                ok = False
+        except Exception as e:
+            console.print(f"[red] ✗ {str(e)[:60]}[/]")
+            ok = False
+
+    # Check ServiceNow PDI is awake
+    if needs_snow:
+        console.print("[dim]  Checking ServiceNow PDI...[/]", end="")
+        try:
+            r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
+                             auth=(SN_USER, SN_PASS),
+                             headers={"Accept": "application/json"}, timeout=30)
+            if r.status_code == 200:
+                console.print("[green] ✓ awake[/]")
+            else:
+                console.print(f"[red] ✗ status {r.status_code}[/]")
+                ok = False
+        except requests.exceptions.Timeout:
+            console.print("[red] ✗ timeout — PDI hibernating, wake at developer.servicenow.com[/]")
+            ok = False
+        except Exception as e:
+            console.print(f"[red] ✗ {str(e)[:60]}[/]")
+            ok = False
 
     if not ok:
         console.print("\n[red]  Pre-flight checks failed. Fix issues and retry.[/]")
@@ -392,9 +434,17 @@ def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
                 f"   peak [red]{int(incident_peak_ms)}{unit}[/]")
     if rollback_ts:
         d_to_rb = (rollback_ts - incident_started_ts).total_seconds()
-        bits.append(f"  [yellow bold]{mitigation_icon} {mitigation_label}:[/]  "
-                    f"[bold]{rollback_ts.strftime(fmt)}[/]"
-                    f"   [dim](+{int(d_to_rb)}s after onset)[/]")
+        if d_to_rb < 0:
+            # Agent thread predates this incident (e.g. pre-existing thread
+            # from earlier work). Show the absolute timestamp without a
+            # nonsensical negative offset.
+            bits.append(f"  [yellow bold]{mitigation_icon} {mitigation_label}:[/]  "
+                        f"[bold]{rollback_ts.strftime(fmt)}[/]"
+                        f"   [dim](pre-existing thread observed)[/]")
+        else:
+            bits.append(f"  [yellow bold]{mitigation_icon} {mitigation_label}:[/]  "
+                        f"[bold]{rollback_ts.strftime(fmt)}[/]"
+                        f"   [dim](+{int(d_to_rb)}s after onset)[/]")
     else:
         bits.append(f"  [yellow]{mitigation_icon} {mitigation_label}:[/]  "
                     f"[dim]waiting for SRE Agent action…[/]")
@@ -873,8 +923,10 @@ def monitor_health(url, path, service_name, agent_name,
                     incident_started_ts = ts_now
                     incident_started_idx = max(0, len(checks) - 1)
                     timeline.add(f"⚠ Regression detected ({code}/{ms:.0f}ms)", "red")
-                if ms > incident_peak_ms:
-                    incident_peak_ms = ms
+                # Timeouts produce code=0,ms=0 — treat as "very high" for peak
+                effective_ms = ms if (ms > 0 and code != 0) else max(ms, 10000)
+                if effective_ms > incident_peak_ms:
+                    incident_peak_ms = effective_ms
             else:
                 consecutive_ok += 1
 
@@ -2475,7 +2527,7 @@ def scenario_replica_down():
             "- Verified: latency back to normal across all 6 replicas",
             "",
             "RCA pattern — one node degraded (deadlock / GC pause / memory).",
-            "Reset (option 8) restores replica count and clears chaos.",
+            "Reset (option 10) restores replica count and clears chaos.",
         ])
 
 # ═══════════════════════════════════════════════════════════
