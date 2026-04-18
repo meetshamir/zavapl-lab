@@ -11,7 +11,7 @@ resources, and monitors the SRE Agent's autonomous response.
 Usage:  python simulator/demo.py
 """
 
-import sys, os, time, json, subprocess, threading
+import sys, os, time, json, re, subprocess, threading
 from datetime import datetime
 
 # ── Auto-install dependencies ───────────────────────────────
@@ -811,23 +811,48 @@ def poll_alert_by_id(alert_id, required_condition="Resolved"):
         pass
     return False
 
+_THREAD_ROW_RE = re.compile(
+    r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    r"\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+    r"\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+    r"\s+(.*)$"
+)
+
 def poll_agent_thread(keyword, since_time):
-    """Check if SRE Agent has a thread matching keyword created since since_time.
-    Returns (found: bool, thread_id: str or None)."""
+    """Check if SRE Agent has a thread matching keyword created STRICTLY AFTER
+    since_time. Returns (found: bool, thread_id: str or None).
+
+    since_time is "YYYY-MM-DDTHH:MM:SSZ" (UTC, recorded at sim start).
+    `srectl thread list` CreateAt column is also UTC. We require
+    thread.created_at >= since_time so we never match a pre-existing thread
+    from prior sim runs or unrelated agent activity.
+    """
+    try:
+        since_dt = datetime.strptime(since_time, "%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        since_dt = None
+
     try:
         result = subprocess.run(
             ["srectl", "thread", "list", "--quiet"],
             capture_output=True, text=True, timeout=10
         )
+        kw = keyword.lower()
         for line in result.stdout.splitlines():
-            if keyword.lower() in line.lower() and since_time[:10] in line:
-                # Try to extract thread ID (UUID format) from the line
-                parts = line.strip().split()
-                for p in parts:
-                    p = p.strip()
-                    if len(p) == 36 and p.count("-") == 4:
-                        return True, p
-                return True, None
+            m = _THREAD_ROW_RE.match(line)
+            if not m:
+                continue
+            tid, created, _modified, title = m.groups()
+            if kw not in title.lower():
+                continue
+            if since_dt is not None:
+                try:
+                    created_dt = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                if created_dt < since_dt:
+                    continue
+            return True, tid
     except Exception:
         pass
     return False, None
