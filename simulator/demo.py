@@ -167,6 +167,29 @@ SRE_AGENT_THREAD_BASE = (
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
 
+# ── Timestamped event prints ────────────────────────────────
+# Auto-prepend HH:MM:SS to any console.print() whose first arg is a string
+# starting with an "event glyph" (▶ ✓ ✗ ⚠ ⏳ 🚨 → 🔴 🟢 🟡). This gives every
+# user-visible action a timeline without touching individual call sites.
+import re as _re
+from datetime import datetime as _dt
+_EVENT_RE = _re.compile(
+    r'^\s*(?:\[[^\]]+\]\s*)?(?:▶|✓|✗|⚠|⏳|🚨|→|🔴|🟢|🟡|🔧|🔍|📊|📎|📡|💡)'
+)
+_LEAD_RE = _re.compile(r'^(\s*)(\[[^\]]+\]\s*)?(\s*)')
+_orig_console_print = console.print
+def _ts_print(*args, **kwargs):
+    if args and isinstance(args[0], str) and _EVENT_RE.match(args[0]):
+        ts = _dt.now().strftime("%H:%M:%S")
+        first = args[0]
+        m = _LEAD_RE.match(first)
+        # Place stamp right after any leading whitespace + optional opening
+        # style tag, so indentation is preserved regardless of styling.
+        cut = m.end() if m else 0
+        args = (f"{first[:cut]}[dim]{ts}[/] {first[cut:]}",) + args[1:]
+    return _orig_console_print(*args, **kwargs)
+console.print = _ts_print
+
 # ── Keyboard ────────────────────────────────────────────────
 def check_key():
     """Non-blocking keypress check. Returns bytes or None."""
@@ -291,19 +314,19 @@ def show_backstory(emoji, title, backstory, what_happens):
     """Phase 1: Display the scenario narrative then proceed automatically."""
     console.clear()
     console.print(Panel(
-        f"\n  [bold]BACKSTORY:[/]\n{_indent(backstory)}\n\n"
-        f"  [bold]WHAT WILL HAPPEN:[/]\n{_indent(what_happens)}\n",
+        f"  [bold]BACKSTORY:[/]\n{_indent(backstory)}\n"
+        f"  [bold]WHAT WILL HAPPEN:[/]\n{_indent(what_happens)}",
         title=f"[bold]{emoji} {title}[/]",
-        border_style="cyan", width=68,
+        border_style="cyan", width=92, padding=(0, 1),
     ))
-    time.sleep(2)
+    time.sleep(1)
 
 def show_result(emoji, title, lines):
     """Phase 4: Display result summary and wait for Enter."""
     console.print(Panel(
-        "\n" + "\n".join(f"  {l}" for l in lines) + "\n",
+        "\n".join(f"  {l}" for l in lines),
         title=f"[bold green]{emoji} {title}[/]",
-        border_style="green", width=68,
+        border_style="green", width=92, padding=(0, 1),
     ))
     console.input("[dim]  Press Enter to return to menu...[/]")
 
@@ -2385,11 +2408,10 @@ def show_menu():
     console.clear()
     console.print(Panel(
         "[bold white]   POWERGRID DEMO SIMULATOR — Zava Power Limited[/]",
-        border_style="bold cyan", width=64,
+        border_style="bold cyan", width=80, padding=(0, 1),
     ))
-    console.print(Panel(MENU_ITEMS, border_style="dim", width=64))
+    console.print(Panel(MENU_ITEMS, border_style="dim", width=80, padding=(0, 1)))
     console.print(_system_status_panel())
-    console.print()
 
 # ── Main ────────────────────────────────────────────────────
 def main():
