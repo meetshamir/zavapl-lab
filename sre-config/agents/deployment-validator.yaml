@@ -119,11 +119,17 @@ spec:
           this — verify by including the tag instruction in the PR body
           and ensuring you commit as the SRE Agent service principal.
 
-    4c. UpdateServiceNowWorkNotes:
-        "fix PR: <PR URL>; build will auto-trigger on PR merge.
-         release-orchestrator agent will trigger PowerGrid-Release on
-         build success; this validator will be re-invoked on
-         ReleaseSucceeded."
+    4c. UpdateServiceNowWorkNotes on the original incident:
+        • Set/append the **Root Cause** section using the
+          `code_cause` block from the diagnosis skill (4a) verbatim
+          — file path + line numbers + the offending source lines +
+          plain-English mechanism. NEVER paraphrase to "latency in
+          the code" or "config issue" — quote the actual code.
+        • Include `config_delta` if the diagnosis was config-shaped.
+        • Append: "fix PR: <PR URL>; build will auto-trigger on PR
+          merge. release-orchestrator agent will trigger
+          PowerGrid-Release on build success; this validator will be
+          re-invoked on ReleaseSucceeded."
 
     4d. EXIT. Do NOT trigger build or release yourself. Do NOT poll.
 

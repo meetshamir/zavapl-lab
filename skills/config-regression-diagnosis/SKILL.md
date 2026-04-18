@@ -70,22 +70,51 @@ For each external URL referenced by the app's env, do a quick
 reachability. A 5xx because the app can't reach `https://api.partner/`
 is still a config-shaped failure (wrong URL or firewall change).
 
+### 5. Pinpoint the exact config delta + the code path that fails (REQUIRED)
+A generic "config missing" is NOT acceptable. Identify:
+  a. Which env var / config key changed (name + old value → new value).
+  b. Which deploy artifact introduced the change — the deploy YAML
+     diff (e.g. `k8s/base/application.yaml`) between the previous
+     healthy build's commit SHA and this build's commit SHA. Get both
+     SHAs via `GetPipelineRunHistory` on **PowerGrid-Build**.
+  c. The code path that reads that config and short-circuits — quote
+     the exact lines (≤5) showing the gating logic. Example:
+     ```js
+     // src/notification-svc/server.js:18-20  (unchanged for months)
+     if (!process.env.REQUIRED_CONFIG) {
+       return res.status(503).json({ error: "REQUIRED_CONFIG not set" });
+     }
+     ```
+  d. State the mechanism: WHICH env var, WHERE it was removed, WHICH
+     handler reads it, WHY the code returns 503 when missing.
+
 ## Output to caller
 
 ```
 CONFIG REGRESSION RCA
   service:        notification-svc
   revision:       ca-powergrid-notify--0000017
+  deploy_time:    21:02 UTC
   symptom:        every POST /notify returns 503 within 50ms
-  evidence:       env diff shows REQUIRED_CONFIG was REMOVED
   count_5min:     94
   prior revision: REQUIRED_CONFIG=enabled  (worked fine)
-  likely cause:   accidental removal of REQUIRED_CONFIG in deploy
-                  template — service short-circuits 503 when missing.
-  fix direction: re-add REQUIRED_CONFIG=enabled to ACA env vars.
-                 Alternatively make REQUIRED_CONFIG optional with
-                 sensible default in the service code.
+  config_delta:   REQUIRED_CONFIG removed from env
+                  (k8s/base/application.yaml line 73, commit abc1234)
+  code_cause:     |
+    src/notification-svc/server.js lines 18-20 (unchanged for months):
+
+      if (!process.env.REQUIRED_CONFIG) {
+        return res.status(503).json({ error: "REQUIRED_CONFIG not set" });
+      }
+
+    The /notify handler short-circuits with 503 when the env var is
+    absent. The deploy template was edited to remove the env var
+    declaration, so every request hits this guard.
+  fix direction: re-add REQUIRED_CONFIG=enabled to ACA env vars
+                 (revert the YAML line); OR make REQUIRED_CONFIG
+                 optional with a sensible default in the code.
 ```
 
 Hand off to `deployment-rollback` → `servicenow-incident-mgmt` →
-`create-pr-or-issue`.
+`create-pr-or-issue`. The `code_cause` + `config_delta` blocks go
+verbatim into the SNOW **Root Cause** section.

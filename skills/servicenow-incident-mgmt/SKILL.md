@@ -147,13 +147,45 @@ is unavailable. Customer-facing portal shows error messages for outage-related f
 
 ## Root Cause
 
-<Technical explanation of what caused the incident. Be specific — reference
-env vars, config changes, code paths, infrastructure failures.>
+<Technical explanation of what caused the incident. **Must include the
+actual code-level cause**, not a paraphrase. Quote the offending
+function and the exact source lines (≤5 lines, with file path and
+line numbers) from the diagnosis skill's `code_cause` block. State
+the mechanism in plain English: WHICH function, WHAT it does, WHY it
+produces the observed symptom, by HOW MUCH (latency added, % of
+requests affected, etc.). If the cause is a config/env delta, also
+include `config_delta` showing old → new value and the deploy
+artifact line that introduced it.>
 
-Example: "The FORCE_ERROR environment variable was set to 'true' on the
-ca-powergrid-outage container app. This caused the Flask middleware to intercept
-all incoming requests and return HTTP 503 without processing them. The env var
-was introduced in revision ca-powergrid-outage--abc1234 deployed at 14:25 UTC."
+Example (perf regression):
+"The :latest image of grid-status-api enables a global Express
+middleware that delays every request:
+
+```js
+// src/grid-status-api/server.js:42-46  (commit abc1234, build #44)
+if (SIMULATE_DELAY_MS > 0) {
+  app.use((_req, _res, next) => {
+    setTimeout(next, SIMULATE_DELAY_MS);
+  });
+}
+```
+
+The deploy YAML for revision ca-powergrid-grid--0000031 sets
+`SIMULATE_DELAY_MS=2000`, so every endpoint sleeps 2 s before
+responding. The :stable image was built from the same source but
+deployed without the env var, so the middleware was a no-op."
+
+Example (crash regression):
+"src/outage-api/app.py line 14 imports `from flask.ext.cors import CORS`.
+Flask 3.0 (introduced in build #44) removed the legacy `flask.ext`
+shim, so module load fails at process startup → every request returns
+500 because Gunicorn never gets a working app."
+
+Example (config regression):
+"k8s/base/application.yaml line 73 (commit abc1234) removed
+`REQUIRED_CONFIG=enabled` from the notification-svc env. The /notify
+handler short-circuits with 503 when that env is absent
+(src/notification-svc/server.js:18-20)."
 
 ---
 

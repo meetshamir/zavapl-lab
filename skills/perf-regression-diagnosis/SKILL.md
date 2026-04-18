@@ -74,23 +74,84 @@ stream filtered by `RevisionName == "{REVISION_NAME}"`. Look for:
 - GC pause warnings
 - "EVENTLOOP_BLOCKED", "long task" warnings (Node)
 - Thread pool saturation (Python)
+- **Startup banner lines that mention latency injection** — e.g.
+  `SIMULATE_DELAY_MS=N — artificial latency enabled` (Node) or
+  similar Python equivalents. These reveal env-var-driven latency
+  middleware that isn't visible in dependency traces.
+
+### 6. Check chaos / latency-injection endpoints
+Some services expose an admin endpoint that injects server-side
+latency (used by load tests but sometimes left enabled). For each
+slow service, GET `https://<service-fqdn>/chaos/status` and
+`/chaos/latency` if they exist. If `active: true` or `latency_ms > 0`,
+**that is your root cause** — not a code regression. Disable via
+`DELETE /chaos/latency` or restart the revision.
+
+### 7. Pinpoint the code change (REQUIRED for the SNOW summary)
+A generic "latency baked into the code" is NOT acceptable. You must
+identify the SPECIFIC change. Steps:
+  a. Get the build commit SHA from the failing build:
+     `GetPipelineRunHistory` on **PowerGrid-Build** for buildId
+     → `sourceVersion` field.
+  b. Get the previous healthy build's commit SHA the same way.
+  c. Use `GetFileContents` / repo browse on saziz_microsoft/zavapl-lab
+     to inspect the diff for the failing service's source dir
+     (e.g. `src/grid-status-api/`). Pay attention to:
+       - new `setTimeout` / `await sleep` / `time.sleep` calls
+       - new env-var reads that gate latency middleware
+       - new synchronous loops over request payloads
+       - new external HTTP/DB calls without timeouts
+       - changes to Dockerfile ENV / CMD that toggle latency
+  d. Quote the exact function name and the offending lines (≤5 lines)
+     in the RCA. Example:
+     ```js
+     // src/grid-status-api/server.js:42-46  (commit abc1234)
+     if (SIMULATE_DELAY_MS > 0) {
+       app.use((_req, _res, next) => {
+         setTimeout(next, SIMULATE_DELAY_MS);  // adds 2000ms per request
+       });
+     }
+     ```
+  e. State the mechanism in plain English: WHICH function, WHAT it
+     does, WHY it slows requests, by HOW MUCH.
 
 ## Output to caller
-Return a structured RCA:
+Return a structured RCA. The `code_cause` field is REQUIRED and must
+quote actual source lines, not paraphrase.
 
 ```
 PERF REGRESSION RCA
   service:        grid-status-api
-  revision:       ca-powergrid-grid--0000029
-  scope:          single endpoint /regions
-  p95 before:     115 ms (revision 0000028)
-  p95 after:      9837 ms (revision 0000029, +85x)
+  revision:       ca-powergrid-grid--0000031
+  deploy_time:    21:02 UTC
+  scope:          all endpoints (uniform 2000 ms floor)
+  p95 before:     115 ms (revision 0000030, image :stable)
+  p95 after:      2154 ms (revision 0000031, image :latest)
   dependencies:   p95 < 50 ms (not the bottleneck)
-  suspected:      synchronous CPU work in /regions handler
-  likely cause:   O(n²) checksum loop added in commit <sha>
-  fix direction: replace nested loop with single-pass hash; OR move
-                 checksum to async worker; OR cache by payload hash.
+  chaos_endpoint: /chaos/status returns inactive
+  startup_log:    "SIMULATE_DELAY_MS=2000 — artificial latency enabled"
+  code_cause:     |
+    src/grid-status-api/server.js lines 42-46 (commit abc1234,
+    introduced in build #44):
+
+      if (SIMULATE_DELAY_MS > 0) {
+        app.use((_req, _res, next) => {
+          setTimeout(next, SIMULATE_DELAY_MS);
+        });
+      }
+
+    A global Express middleware delays EVERY request by
+    SIMULATE_DELAY_MS milliseconds before invoking the handler. The
+    :latest image was built with the deploy YAML setting
+    SIMULATE_DELAY_MS=2000, which makes every endpoint sleep 2 s
+    before responding.
+  fix direction: revert the deploy manifest's SIMULATE_DELAY_MS
+                 setting to 0 (or remove the env var); OR remove the
+                 dev-only middleware entirely from server.js so it
+                 cannot be re-enabled in production.
 ```
 
 This RCA is the body for the `servicenow-incident-mgmt` work note and
-the `create-pr-or-issue` PR description.
+the `create-pr-or-issue` PR description. The `code_cause` block goes
+verbatim into the SNOW **Root Cause** section so on-callers see the
+exact lines without re-investigating.

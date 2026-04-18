@@ -63,22 +63,49 @@ If exceptions reference missing config / undefined vars, also call the
 service-specific diagnosis skill (e.g. `outage-api-diagnosis`) to
 inspect env-var differences vs the prior revision.
 
+### 6. Pinpoint the code change (REQUIRED for the SNOW summary)
+A generic "exception in the code" is NOT acceptable. Identify the
+SPECIFIC change:
+  a. Get the build commit SHA from the failing build via
+     `GetPipelineRunHistory` on **PowerGrid-Build** → `sourceVersion`.
+  b. Get the previous healthy build's SHA the same way.
+  c. Browse the diff for the failing service (e.g.
+     `src/outage-api/`) — focus on the file/line referenced in the
+     exception stack trace.
+  d. Quote the exact function and the offending lines (≤5 lines) in
+     the RCA. Example:
+     ```python
+     # src/outage-api/app.py:14  (commit abc1234)
+     from flask.ext.cors import CORS   # removed in Flask 3.0
+     ```
+  e. State the mechanism: WHICH line throws, WHAT it expects, WHY
+     it's gone, what the fix line should be.
+
 ## Output to caller
 
 ```
 CRASH REGRESSION RCA
   service:        outage-api
   revision:       ca-powergrid-outage--0000044
+  deploy_time:    21:02 UTC
   symptom:        500 on every request to /api/outages
   exception:      ModuleNotFoundError: No module named 'flask.ext'
   count_5min:     127 (matches request count — every request fails)
-  prior revision: 0 exceptions
-  likely cause:   Flask 3.0 upgrade removed flask.ext shim;
-                  outage-api still uses 'from flask.ext.cors import CORS'
-  fix direction: replace import with 'from flask_cors import CORS'
-                 (one-line change, no behavior change)
+  prior revision: 0 exceptions (image :stable, Flask 2.3 → import worked)
+  code_cause:     |
+    src/outage-api/app.py line 14 (commit abc1234, build #44):
+
+      from flask.ext.cors import CORS
+
+    Flask 3.0 removed the legacy `flask.ext` import shim. The
+    outage-api still imports CORS via the old path, so module load
+    fails at process startup → every request returns 500 because
+    Gunicorn never gets a working app object.
+  fix direction: replace with `from flask_cors import CORS`
+                 (one-line change, no behavior change).
 ```
 
 Pass to `deployment-rollback` (immediate mitigation), then
 `servicenow-incident-mgmt` (open ticket with this RCA), then
-`create-pr-or-issue` (file fix PR with this body).
+`create-pr-or-issue` (file fix PR with this body). The `code_cause`
+block goes verbatim into the SNOW **Root Cause** section.
