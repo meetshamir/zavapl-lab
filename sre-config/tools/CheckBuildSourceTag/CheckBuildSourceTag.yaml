@@ -1,0 +1,77 @@
+api_version: azuresre.ai/v2
+kind: ExtendedAgentTool
+metadata:
+  name: CheckBuildSourceTag
+spec:
+  type: PythonTool
+  connector: ''
+  toolMode: Auto
+  description: |-
+    Determine whether an Azure DevOps build was authored by the SRE
+    Agent (i.e. originated from an automated fix PR) versus a human
+    developer. Returns is_sre_agent_fix = True ONLY if either:
+      (a) the build has the ADO tag 'sre-agent-fix', OR
+      (b) the build's requestedFor.uniqueName matches the SRE Agent
+          service principal UPN.
+    The release-orchestrator agent uses this to filter BuildSucceeded
+    events: it triggers the release pipeline ONLY for SRE-Agent fixes,
+    leaving human-author releases to flow through normal CI/CD gates.
+  functionCode: |-
+    import requests
+    import base64
+
+    ADO_ORG = "sreagentlab"
+    ADO_PROJECT = "zava-pl"
+    ADO_PAT = "<SET_VIA_SRE_AGENT_PORTAL>"
+    SRE_AGENT_SP_UPN = "<SET_VIA_SRE_AGENT_PORTAL>"
+    SRE_AGENT_TAG = "sre-agent-fix"
+
+    def _ado_get(path: str) -> dict:
+        url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/{path}"
+        auth = base64.b64encode(f":{ADO_PAT}".encode()).decode()
+        r = requests.get(url,
+                         headers={"Authorization": f"Basic {auth}",
+                                  "Accept": "application/json"},
+                         timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def check_build_source_tag(build_id: str) -> dict:
+        try:
+            build = _ado_get(f"_apis/build/builds/{build_id}?api-version=7.1")
+            tags_resp = _ado_get(f"_apis/build/builds/{build_id}/tags?api-version=7.1")
+            tags = tags_resp.get("value", []) if isinstance(tags_resp, dict) else []
+            requested_for = (build.get("requestedFor") or {}).get("uniqueName", "")
+            requested_by = (build.get("requestedBy") or {}).get("uniqueName", "")
+            source_branch = build.get("sourceBranch", "")
+            tag_match = SRE_AGENT_TAG in tags
+            sp_match = (
+                bool(SRE_AGENT_SP_UPN) and SRE_AGENT_SP_UPN.lower() not in
+                ("", "<set_via_sre_agent_portal>") and
+                (requested_for.lower() == SRE_AGENT_SP_UPN.lower() or
+                 requested_by.lower() == SRE_AGENT_SP_UPN.lower())
+            )
+            return {
+                "success": True,
+                "build_id": build_id,
+                "is_sre_agent_fix": tag_match or sp_match,
+                "matched_via_tag": tag_match,
+                "matched_via_service_principal": sp_match,
+                "tags": tags,
+                "requested_for": requested_for,
+                "requested_by": requested_by,
+                "source_branch": source_branch,
+                "result": build.get("result", ""),
+                "status": build.get("status", ""),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}
+  timeoutSeconds: 60
+  dependencies:
+  - requests
+  authScopes:
+  parameters:
+  - name: build_id
+    type: string
+    description: "string:Azure DevOps build ID (e.g. 45)"
+    required: true

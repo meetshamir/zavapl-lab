@@ -720,9 +720,6 @@ def run_build_release(failure_scenario, services):
         console.print(f"[red]  ✗ Build {r}[/]")
         console.input("[dim]  Press Enter...[/]"); return None
 
-    if r == "partiallySucceeded":
-        console.print("[yellow]  ⚠ Build partiallySucceeded "
-                      "(CSSC compliance warnings — non-blocking)[/]")
     console.print("[green]  ✓ Build succeeded![/]\n")
     console.print("[bold cyan]  ▶ Waiting for PowerGrid-Release auto-trigger (build→release chaining)...[/]")
 
@@ -750,9 +747,6 @@ def run_build_release(failure_scenario, services):
         console.print(f"[red]  ✗ Release {r}[/]")
         console.input("[dim]  Press Enter...[/]"); return None
 
-    if r == "partiallySucceeded":
-        console.print("[yellow]  ⚠ Release partiallySucceeded "
-                      "(CSSC compliance warnings — non-blocking)[/]")
     console.print("[green]  ✓ Release succeeded![/]\n")
     return {
         "build_id": build_id, "release_id": release_id,
@@ -1026,11 +1020,17 @@ def monitor_health(url, path, service_name, agent_name,
                 elif recovered_idx is not None and orig_idx == recovered_idx:
                     marker = "[green]▼ recovered[/]"
                 sc = "green" if c["ok"] else "red"
+                if c["code"] == 0:
+                    state_label = "[red]DOWN[/]"
+                elif c["ok"]:
+                    state_label = f"[green]{ok_label}[/]"
+                else:
+                    state_label = f"[red]{bad_label}[/]"
                 ht.add_row(
                     c["ts"],
                     f"[{sc}]{c['code']}[/]",
                     f"{c['ms']:.0f}ms",
-                    f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]",
+                    state_label,
                     marker,
                 )
             grid.add_row(ht)
@@ -1390,8 +1390,14 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                     marker = "[yellow]◀ SRE rollback[/]"
                 elif global_idx == recovered_idx:
                     marker = "[green]◀ recovered[/]"
+                if c["code"] == 0:
+                    state_label = "[red]DOWN[/]"
+                elif c["ok"]:
+                    state_label = f"[green]{ok_label}[/]"
+                else:
+                    state_label = f"[red]{bad_label}[/]"
                 ht.add_row(c["ts_str"], f"[{sc}]{c['code']}[/]", f"{c['ms']:.0f}ms",
-                           f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]",
+                           state_label,
                            marker)
             grid.add_row(ht)
 

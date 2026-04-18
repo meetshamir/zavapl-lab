@@ -1,0 +1,94 @@
+api_version: azuresre.ai/v2
+kind: ExtendedAgentTool
+metadata:
+  name: TriggerAdoRelease
+spec:
+  type: PythonTool
+  connector: ''
+  toolMode: Auto
+  description: |-
+    Trigger the PowerGrid-Release pipeline for a specific build_id.
+    Used by the release-orchestrator agent to close the auto-remediation
+    loop after the SRE Agent's fix PR has been merged and a new build
+    has succeeded. Returns the new release run ID, status, and ADO URL.
+    Sets a build tag 'sre-agent-release-<release_id>' on the SOURCE
+    build so the chain is audit-traceable.
+  functionCode: |-
+    import requests
+    import base64
+    import json
+
+    ADO_ORG = "sreagentlab"
+    ADO_PROJECT = "zava-pl"
+    ADO_PAT = "<SET_VIA_SRE_AGENT_PORTAL>"
+
+    def _auth_header() -> str:
+        auth = base64.b64encode(f":{ADO_PAT}".encode()).decode()
+        return f"Basic {auth}"
+
+    def trigger_ado_release(release_pipeline_id: str, build_id: str = "",
+                            reason: str = "sre-agent auto-release") -> dict:
+        try:
+            url = (f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/pipelines/"
+                   f"{release_pipeline_id}/runs?api-version=7.1")
+            body = {
+                "templateParameters": {},
+                "variables": {
+                    "TRIGGERED_BY": {"value": "sre-agent"},
+                    "SOURCE_BUILD_ID": {"value": str(build_id)},
+                    "REASON": {"value": reason[:200]},
+                },
+            }
+            r = requests.post(
+                url,
+                headers={"Authorization": _auth_header(),
+                         "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                data=json.dumps(body),
+                timeout=30,
+            )
+            r.raise_for_status()
+            run = r.json()
+            release_id = run.get("id")
+            release_url = run.get("_links", {}).get("web", {}).get("href", "")
+            # Best-effort: tag the SOURCE build for audit traceability
+            tag_status = None
+            if build_id:
+                try:
+                    tag_url = (f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/"
+                               f"_apis/build/builds/{build_id}/tags/"
+                               f"sre-agent-release-{release_id}?api-version=7.1")
+                    rt = requests.put(tag_url,
+                                      headers={"Authorization": _auth_header()},
+                                      timeout=15)
+                    tag_status = rt.status_code
+                except Exception:
+                    tag_status = "tag-failed"
+            return {
+                "success": True,
+                "release_id": release_id,
+                "status": run.get("state", ""),
+                "result": run.get("result", ""),
+                "url": release_url,
+                "source_build_id": build_id,
+                "audit_tag_status": tag_status,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)[:200]}
+  timeoutSeconds: 90
+  dependencies:
+  - requests
+  authScopes:
+  parameters:
+  - name: release_pipeline_id
+    type: string
+    description: "string:Azure DevOps release pipeline ID (PowerGrid-Release = 5)"
+    required: true
+  - name: build_id
+    type: string
+    description: "string:Source build ID this release is materializing (for audit)"
+    required: false
+  - name: reason
+    type: string
+    description: "string:Free-text reason recorded as a release variable (default 'sre-agent auto-release')"
+    required: false
