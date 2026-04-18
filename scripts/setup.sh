@@ -90,5 +90,5 @@ echo -e "\033[1;32m╚═══════════════════�
 echo -e "  \033[1;36mAzure Portal:\033[0m  https://portal.azure.com"
 echo -e "  \033[1;36mSRE Agent:\033[0m     https://sre.azure.com"
 echo -e ""
-echo -e "  Run \033[1;33mbash scripts/menu.sh\033[0m to inject failures and test SRE Agent."
+echo -e "  Run \033[1;33mpython simulator/demo.py\033[0m to inject failures and test SRE Agent."
 echo -e ""

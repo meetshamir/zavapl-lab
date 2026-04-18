@@ -50,10 +50,28 @@ if (SIMULATE_DELAY_MS > 0) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+const crypto = require("crypto");
+
 /** Return a value randomly jittered by ±pct (0-1). */
 function jitter(value, pct = 0.05) {
   const delta = value * pct;
   return Math.round(value + (Math.random() * 2 - 1) * delta);
+}
+
+/**
+ * Compute SCADA telemetry integrity checksum — real per-request work.
+ * Grid management systems verify data integrity on every read.
+ * Uses CPU-bound computation that App Insights measures as server
+ * duration. On 0.25 vCPU this takes ~300-500ms per request. Under
+ * heavy concurrency, requests serialize on the single core pushing
+ * server-side duration well above the 1500ms alert threshold.
+ */
+function computeTelemetryChecksum(regions) {
+  const payload = JSON.stringify(regions);
+  // Deliberately CPU-intensive: pbkdf2Sync is synchronous and blocks
+  // the event loop, so App Insights measures the full duration.
+  const key = crypto.pbkdf2Sync(payload, "scada-grid-salt", 50000, 64, "sha512");
+  return key.toString("hex");
 }
 
 /** Base region definitions — load values are jittered on every request. */
@@ -111,17 +129,15 @@ function buildAlerts() {
 // ---------------------------------------------------------------------------
 app.use((req, _res, next) => {
   if (chaosLatencyMs > 0 && Date.now() < chaosExpiry) {
-    // CPU-burn to create real server-side latency (not just setTimeout)
-    const end = Date.now() + chaosLatencyMs;
-    while (Date.now() < end) {
-      Math.random() * Math.random();
-    }
+    setTimeout(next, chaosLatencyMs);
   } else if (chaosLatencyMs > 0 && Date.now() >= chaosExpiry) {
     chaosLatencyMs = 0;
     chaosExpiry = 0;
     console.log("Chaos latency expired — back to normal");
+    next();
+  } else {
+    next();
   }
-  next();
 });
 
 // ---------------------------------------------------------------------------
@@ -163,7 +179,9 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/regions", (_req, res) => {
-  res.json(buildRegions());
+  const regions = buildRegions();
+  const checksum = computeTelemetryChecksum(regions);
+  res.json({ regions, checksum, timestamp: new Date().toISOString() });
 });
 
 app.get("/capacity", (_req, res) => {

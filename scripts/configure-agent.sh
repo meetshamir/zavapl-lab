@@ -171,7 +171,6 @@ echo "    3. ServiceNow (optional): developer.servicenow.com → Request Instanc
 echo "       (see docs/SERVICENOW-SETUP.md)"
 echo ""
 echo "  Ready to demo:"
-echo "    python simulator/demo.py              # CLI simulator"
-echo "    bash scripts/break-service.sh          # Quick break"
+echo "    python simulator/demo.py              # CLI simulator (recommended)"
 echo "    # Or: ADO → PowerGrid-Deploy → failure_scenario=crash"
 echo ""

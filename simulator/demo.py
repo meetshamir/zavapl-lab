@@ -286,14 +286,22 @@ def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
 # ── Event Timeline ──────────────────────────────────────────
 def _latency_sparkline(checks, baseline_ms=None, width=70,
                        incident_idx=None, recovered_idx=None,
-                       rollback_idx=None):
-    """Render a colored ASCII sparkline of latency over time, with
-    event markers for incident-start, rollback, and recovery.
+                       rollback_idx=None,
+                       value_key="ms", ok_key="ok", unit="ms",
+                       scale_floor=100.0, scale_multiplier=8):
+    """Render a colored ASCII sparkline of a metric over time, with
+    event markers for incident-start, mitigation, and recovery.
 
-    Returns a Rich-markup string. Color encoding:
+    Generic across scenarios:
+      value_key — dict key holding the numeric metric (default 'ms')
+      ok_key    — dict key holding the healthy bool (default 'ok')
+      unit      — display unit ('ms', '%', 'replicas', ...)
+      scale_floor       — minimum y-axis top to avoid divide-by-zero (e.g. 100 for ms, 100 for %)
+      scale_multiplier  — y-axis = max(peak, baseline*multiplier)
+
+    Color encoding:
       red   = unhealthy probe
       green = healthy probe
-      cyan  = baseline reference line
     Vertical markers (▼) above the row mark events.
     """
     if not checks:
@@ -309,13 +317,13 @@ def _latency_sparkline(checks, baseline_ms=None, width=70,
         sampled.append(checks[int(i)])
         sample_src_idx.append(int(i))
         i += step
-    # Scale: 0 → max(samples, baseline*8), so the sparkline shows
+    # Scale: 0 → max(samples, baseline*multiplier), so the sparkline shows
     # the regression dramatically vs. healthy baseline.
-    max_ms = max(c["ms"] for c in sampled)
+    max_ms = max(c[value_key] for c in sampled)
     scale_top = max(max_ms,
-                    (baseline_ms or 0) * 8 if baseline_ms else max_ms,
+                    (baseline_ms or 0) * scale_multiplier if baseline_ms else max_ms,
                     1.0)
-    scale_top = max(scale_top, 100.0)  # avoid divide-by-near-zero
+    scale_top = max(scale_top, scale_floor)  # avoid divide-by-near-zero
     # Build marker row (event annotations above the sparkline)
     def find_sampled_idx(src_idx):
         if src_idx is None:
@@ -341,16 +349,16 @@ def _latency_sparkline(checks, baseline_ms=None, width=70,
     spark = []
     for c in sampled:
         # 0..7 index into blocks
-        idx = int(min(7, (c["ms"] / scale_top) * 7))
+        idx = int(min(7, (c[value_key] / scale_top) * 7))
         ch = blocks[max(0, idx)]
-        col = "green" if c["ok"] else "red"
+        col = "green" if c[ok_key] else "red"
         spark.append(f"[{col}]{ch}[/]")
     spark_line = "  " + "".join(spark)
     # Y-axis hint (peak + baseline)
-    legend_bits = [f"peak {int(max_ms)}ms"]
+    legend_bits = [f"peak {int(max_ms)}{unit}"]
     if baseline_ms:
-        legend_bits.append(f"baseline {int(baseline_ms)}ms")
-    legend_bits.append(f"scale 0–{int(scale_top)}ms")
+        legend_bits.append(f"baseline {int(baseline_ms)}{unit}")
+    legend_bits.append(f"scale 0–{int(scale_top)}{unit}")
     legend = "  [dim]" + "  •  ".join(legend_bits) + "[/]"
     # Marker legend if any present
     mleg = []
@@ -366,8 +374,14 @@ def _latency_sparkline(checks, baseline_ms=None, width=70,
 
 def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
                             recovered_ts, incident_peak_ms,
-                            healthy_baseline_ms, current_healthy):
-    """Returns (markup, status_color). Renders an incident-status summary."""
+                            healthy_baseline_ms, current_healthy,
+                            unit="ms",
+                            mitigation_label="SRE Agent rollback",
+                            mitigation_icon="♻️"):
+    """Returns (markup, status_color). Renders an incident-status summary.
+
+    Generic across scenarios via `unit` and `mitigation_label`.
+    """
     if incident_started_ts is None:
         return ("  [green]✅ No incident detected — service operating normally.[/]",
                 "green")
@@ -375,14 +389,15 @@ def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
     bits = []
     bits.append(f"  [red bold]⚠ Regression started:[/]   "
                 f"[bold]{incident_started_ts.strftime(fmt)}[/]"
-                f"   peak [red]{int(incident_peak_ms)}ms[/]")
+                f"   peak [red]{int(incident_peak_ms)}{unit}[/]")
     if rollback_ts:
         d_to_rb = (rollback_ts - incident_started_ts).total_seconds()
-        bits.append(f"  [yellow bold]♻️  SRE Agent rollback:[/]  "
+        bits.append(f"  [yellow bold]{mitigation_icon} {mitigation_label}:[/]  "
                     f"[bold]{rollback_ts.strftime(fmt)}[/]"
                     f"   [dim](+{int(d_to_rb)}s after onset)[/]")
     else:
-        bits.append("  [yellow]♻️  SRE Agent rollback:[/]  [dim]waiting for revision change…[/]")
+        bits.append(f"  [yellow]{mitigation_icon} {mitigation_label}:[/]  "
+                    f"[dim]waiting for SRE Agent action…[/]")
     if recovered_ts:
         d_total = (recovered_ts - incident_started_ts).total_seconds()
         bits.append(f"  [green bold]✅ Recovered:[/]            "
@@ -395,7 +410,7 @@ def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
                     f"[bold]{int(elapsed)}s elapsed[/]   "
                     f"[dim](recovery threshold = {RECOVERY_THRESHOLD} consecutive healthy probes)[/]")
     if healthy_baseline_ms:
-        bits.append(f"  [dim]Baseline (pre-incident):  {int(healthy_baseline_ms)}ms[/]")
+        bits.append(f"  [dim]Baseline (pre-incident):  {int(healthy_baseline_ms)}{unit}[/]")
     # Current
     if recovered_ts and current_healthy:
         bits.append("  [green bold]Current status:[/]         [green]🟢 SERVING NORMALLY[/]")
@@ -796,6 +811,17 @@ def monitor_health(url, path, service_name, agent_name,
     last_alert_poll = datetime.min
     last_agent_poll = datetime.min
 
+    # ── Resident incident-lifecycle tracking ──
+    incident_started_ts = None  # datetime when first sustained unhealthy probe seen
+    incident_started_idx = None
+    agent_action_ts = None      # datetime when agent thread first observed
+    agent_action_idx = None
+    recovered_ts = None
+    recovered_idx = None
+    incident_peak_ms = 0
+    healthy_baseline_ms = None
+    baseline_samples = []
+
     with Live(console=console, refresh_per_second=2) as live:
         while not recovered:
             key = check_key()
@@ -818,6 +844,8 @@ def monitor_health(url, path, service_name, agent_name,
                 found, thread_id = poll_agent_thread(service_name, sim_start)
                 if found:
                     agent_started = True
+                    agent_action_ts = datetime.now()
+                    agent_action_idx = len(checks)
                     timeline.add(f"🤖 {agent_name} picked up — investigating", "yellow bold")
                     if thread_id:
                         thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
@@ -825,19 +853,35 @@ def monitor_health(url, path, service_name, agent_name,
 
             code, ms = health_check(url, path)
             healthy = healthy_fn(code, ms)
-            checks.append({"ts": datetime.now().strftime("%H:%M:%S"),
+            ts_now = datetime.now()
+            checks.append({"ts": ts_now.strftime("%H:%M:%S"),
+                           "ts_dt": ts_now,
                            "code": code, "ms": ms, "ok": healthy})
-            if len(checks) > 20:
+            if len(checks) > 240:
                 checks.pop(0)
+
+            # Lifecycle bookkeeping
+            if healthy and incident_started_ts is None:
+                baseline_samples.append(ms)
+                if len(baseline_samples) >= 5 and healthy_baseline_ms is None:
+                    healthy_baseline_ms = sum(baseline_samples[:5]) / 5.0
 
             if not healthy:
                 had_unhealthy = True
                 consecutive_ok = 0
+                if incident_started_ts is None:
+                    incident_started_ts = ts_now
+                    incident_started_idx = max(0, len(checks) - 1)
+                    timeline.add(f"⚠ Regression detected ({code}/{ms:.0f}ms)", "red")
+                if ms > incident_peak_ms:
+                    incident_peak_ms = ms
             else:
                 consecutive_ok += 1
 
-            if healthy and had_unhealthy and consecutive_ok >= RECOVERY_THRESHOLD:
+            if healthy and had_unhealthy and consecutive_ok >= RECOVERY_THRESHOLD and recovered_ts is None:
                 recovered = True
+                recovered_ts = ts_now
+                recovered_idx = max(0, len(checks) - 1)
                 timeline.add("🎉 SERVICE RESTORED!", "green bold")
 
             # ── build display ──
@@ -863,18 +907,54 @@ def monitor_health(url, path, service_name, agent_name,
                 ag_status = "[green]🤖 working[/]" if agent_started else "[dim]waiting[/]"
                 grid.add_row(Text(f"  Alert: {a_status}   Agent: {ag_status}"))
 
-            ht = Table(box=box.ROUNDED, border_style="dim", width=64)
+            # ── Resident incident-status panel ──
+            inc_markup, inc_color = _incident_summary_panel(
+                service_name, incident_started_ts, agent_action_ts,
+                recovered_ts, incident_peak_ms, healthy_baseline_ms,
+                healthy,
+                mitigation_label=f"{agent_name} action",
+                mitigation_icon="🤖",
+            )
+            grid.add_row(Panel(inc_markup,
+                title="[bold]Incident Status[/]",
+                border_style=inc_color, width=78, padding=(0, 1)))
+
+            # ── Latency sparkline (resident) ──
+            spark_markup = _latency_sparkline(
+                checks,
+                baseline_ms=healthy_baseline_ms,
+                width=70,
+                incident_idx=incident_started_idx,
+                recovered_idx=recovered_idx,
+                rollback_idx=agent_action_idx,
+            )
+            grid.add_row(Panel(spark_markup,
+                title="[bold]Latency over time (resident)[/]",
+                border_style="blue", width=78, padding=(0, 1)))
+
+            ht = Table(box=box.ROUNDED, border_style="dim", width=78)
             ht.add_column("Time", style="dim", width=9)
             ht.add_column("Status", width=7, justify="center")
             ht.add_column("Latency", width=10, justify="right")
             ht.add_column("Result", width=10, justify="center")
-            for c in checks[-8:]:
+            ht.add_column("Marker", width=22)
+            for idx, c in enumerate(checks[-12:]):
+                # Map back to original index for marker
+                orig_idx = len(checks) - len(checks[-12:]) + idx
+                marker = ""
+                if incident_started_idx is not None and orig_idx == incident_started_idx:
+                    marker = "[red]▼ regression[/]"
+                elif agent_action_idx is not None and orig_idx == agent_action_idx:
+                    marker = f"[yellow]▼ {agent_name}[/]"
+                elif recovered_idx is not None and orig_idx == recovered_idx:
+                    marker = "[green]▼ recovered[/]"
                 sc = "green" if c["ok"] else "red"
                 ht.add_row(
                     c["ts"],
                     f"[{sc}]{c['code']}[/]",
                     f"{c['ms']:.0f}ms",
                     f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]",
+                    marker,
                 )
             grid.add_row(ht)
             grid.add_row(Text(
@@ -1511,6 +1591,18 @@ def scenario_disk():
     last_agent_poll = datetime.now()
     last_resolve_poll = datetime.now()
 
+    # ── Resident incident-lifecycle tracking (disk%) ──
+    # For disk pressure: "bad" = disk used >= 85%
+    incident_started_ts = None
+    incident_started_idx = None
+    agent_action_ts = None
+    agent_action_idx = None
+    recovered_ts = None
+    recovered_idx = None
+    incident_peak_pct = 0
+    healthy_baseline_pct = None
+    consecutive_ok = 0
+
     with Live(console=console, refresh_per_second=1) as live:
         while not recovered:
             key = check_key()
@@ -1537,6 +1629,8 @@ def scenario_disk():
                 found, thread_id = poll_agent_thread("disk", sim_start)
                 if found:
                     agent_started = True
+                    agent_action_ts = datetime.now()
+                    agent_action_idx = max(0, len(checks) - 1)
                     timeline.add("🤖 SRE Agent picked up the alert — investigating!", "yellow bold")
                     if thread_id:
                         thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
@@ -1576,13 +1670,38 @@ def scenario_disk():
                     pass
 
                 if disk_pct is not None:
+                    ts_now_dt = datetime.now()
+                    is_bad = disk_pct >= 85
                     checks.append({
-                        "ts": datetime.now().strftime("%H:%M:%S"),
+                        "ts": ts_now_dt.strftime("%H:%M:%S"),
+                        "ts_dt": ts_now_dt,
                         "pct": disk_pct,
-                        "_poll_time": datetime.now(),
+                        "ok": (not is_bad),
+                        "_poll_time": ts_now_dt,
                     })
-                    if len(checks) > 20:
+                    if len(checks) > 240:
                         checks.pop(0)
+
+                    # Lifecycle bookkeeping
+                    if not is_bad and incident_started_ts is None:
+                        # capture pre-incident baseline (use latest healthy reading)
+                        if healthy_baseline_pct is None:
+                            healthy_baseline_pct = float(disk_pct)
+                    if is_bad:
+                        consecutive_ok = 0
+                        if incident_started_ts is None:
+                            incident_started_ts = ts_now_dt
+                            incident_started_idx = max(0, len(checks) - 1)
+                            timeline.add(f"⚠ Disk pressure detected ({disk_pct}%)", "red")
+                        if disk_pct > incident_peak_pct:
+                            incident_peak_pct = disk_pct
+                    else:
+                        consecutive_ok += 1
+                        if (incident_started_ts is not None and
+                            consecutive_ok >= RECOVERY_THRESHOLD and
+                            recovered_ts is None):
+                            recovered_ts = ts_now_dt
+                            recovered_idx = max(0, len(checks) - 1)
 
             # Build display
             grid = Table.grid(padding=1)
@@ -1628,21 +1747,62 @@ def scenario_disk():
                 bar = f"[{color}]{'█' * filled}{'░' * (bar_width - filled)}[/] {pct}%"
                 grid.add_row(Text(f"  {bar}"))
 
+            # ── Resident incident-status panel ──
+            current_healthy = bool(checks) and checks[-1]["ok"]
+            inc_markup, inc_color = _incident_summary_panel(
+                "VM disk", incident_started_ts, agent_action_ts,
+                recovered_ts, incident_peak_pct, healthy_baseline_pct,
+                current_healthy,
+                unit="%",
+                mitigation_label="vm-ops-agent action",
+                mitigation_icon="🤖",
+            )
+            grid.add_row(Panel(inc_markup,
+                title="[bold]Incident Status[/]",
+                border_style=inc_color, width=78, padding=(0, 1)))
+
+            # ── Disk-usage sparkline (resident) ──
+            if checks:
+                spark_markup = _latency_sparkline(
+                    checks,
+                    baseline_ms=healthy_baseline_pct,
+                    width=70,
+                    incident_idx=incident_started_idx,
+                    recovered_idx=recovered_idx,
+                    rollback_idx=agent_action_idx,
+                    value_key="pct", ok_key="ok", unit="%",
+                    scale_floor=100.0, scale_multiplier=1,  # disk% caps at 100
+                )
+                grid.add_row(Panel(spark_markup,
+                    title="[bold]Disk usage over time (resident)[/]",
+                    border_style="blue", width=78, padding=(0, 1)))
+
             # History table
             if checks:
-                dt = Table(box=box.ROUNDED, border_style="dim", width=50)
+                dt = Table(box=box.ROUNDED, border_style="dim", width=78)
                 dt.add_column("Time", style="dim", width=9)
                 dt.add_column("Disk %", width=8, justify="right")
                 dt.add_column("Bar", width=25)
-                for c in checks[-8:]:
+                dt.add_column("Marker", width=22)
+                shown = checks[-10:]
+                for idx, c in enumerate(shown):
+                    orig_idx = len(checks) - len(shown) + idx
                     p = c["pct"]
                     clr = "red" if p > 85 else "yellow" if p > 70 else "green"
                     bw = 20
                     bf = int(p / 100 * bw)
+                    marker = ""
+                    if incident_started_idx is not None and orig_idx == incident_started_idx:
+                        marker = "[red]▼ pressure[/]"
+                    elif agent_action_idx is not None and orig_idx == agent_action_idx:
+                        marker = "[yellow]▼ vm-ops-agent[/]"
+                    elif recovered_idx is not None and orig_idx == recovered_idx:
+                        marker = "[green]▼ cleaned[/]"
                     dt.add_row(
                         c["ts"],
                         f"[{clr}]{p}%[/]",
                         f"[{clr}]{'█' * bf}{'░' * (bw - bf)}[/]",
+                        marker,
                     )
                 grid.add_row(dt)
 
@@ -1772,6 +1932,18 @@ def scenario_load():
     trigger_sent = False
     agent_thread_id = None
 
+    # Resident incident-lifecycle tracking
+    incident_started_ts = None
+    incident_started_idx = None
+    agent_action_ts = None
+    agent_action_idx = None
+    recovered_ts = None
+    recovered_idx = None
+    incident_peak_ms = 0
+    healthy_baseline_ms = None
+    baseline_samples = []
+    consecutive_ok = 0
+
     # SRE Agent HTTP trigger URL
     SRE_TRIGGER_URL = "https://sre-zavapower-ops--5a379588.bc75887b.eastus2.azuresre.ai/api/v1/httptriggers/trigger/9a276c65-c2ed-4e6e-b478-07e79a85a495"
 
@@ -1789,13 +1961,38 @@ def scenario_load():
                 # Record every reading (including timeouts where ms > 0)
                 if ms > 0:
                     is_slow = code != 200 or ms > 500
+                    is_ok = not is_slow
                     # Only add if timestamp changed (avoid duplicate entries)
-                    ts_now = datetime.now().strftime("%H:%M:%S")
+                    ts_now_dt = datetime.now()
+                    ts_now = ts_now_dt.strftime("%H:%M:%S")
                     if not checks or checks[-1]["ts"] != ts_now:
                         checks.append({"ts": ts_now,
-                                        "code": code, "ms": ms, "slow": is_slow})
-                        if len(checks) > 20:
+                                        "ts_dt": ts_now_dt,
+                                        "code": code, "ms": ms,
+                                        "slow": is_slow, "ok": is_ok})
+                        if len(checks) > 240:
                             checks.pop(0)
+
+                        # Lifecycle bookkeeping
+                        if is_ok and incident_started_ts is None:
+                            baseline_samples.append(ms)
+                            if len(baseline_samples) >= 5 and healthy_baseline_ms is None:
+                                healthy_baseline_ms = sum(baseline_samples[:5]) / 5.0
+                        if is_slow:
+                            consecutive_ok = 0
+                            if incident_started_ts is None:
+                                incident_started_ts = ts_now_dt
+                                incident_started_idx = max(0, len(checks) - 1)
+                            if ms > incident_peak_ms:
+                                incident_peak_ms = ms
+                        else:
+                            consecutive_ok += 1
+                            if (incident_started_ts is not None and
+                                consecutive_ok >= RECOVERY_THRESHOLD and
+                                recovered_ts is None):
+                                recovered_ts = ts_now_dt
+                                recovered_idx = max(0, len(checks) - 1)
+                                timeline.add("✅ Latency recovered (sustained healthy probes)", "green bold")
 
                     if is_slow and not had_slow:
                         had_slow = True
@@ -1825,6 +2022,8 @@ def scenario_load():
                             if r.status_code in (200, 201, 202):
                                 resp = r.json()
                                 agent_thread_id = resp.get("threadId", "")
+                                agent_action_ts = datetime.now()
+                                agent_action_idx = max(0, len(checks) - 1)
                                 timeline.add("🤖 SRE Agent investigating (autonomous)", "yellow bold")
                                 if agent_thread_id:
                                     thread_url = f"{SRE_AGENT_THREAD_BASE}/{agent_thread_id}"
@@ -1850,17 +2049,54 @@ def scenario_load():
                 ag_status = "[green]🤖 autonomous[/]" if agent_thread_id else "[dim]waiting[/]"
                 grid.add_row(Text(f"  Synthetic test: {t_status}   Agent: {ag_status}"))
 
-                ht = Table(box=box.ROUNDED, border_style="dim", width=64)
+                # ── Resident incident-status panel ──
+                inc_markup, inc_color = _incident_summary_panel(
+                    "grid-status-api", incident_started_ts, agent_action_ts,
+                    recovered_ts, incident_peak_ms, healthy_baseline_ms,
+                    code == 200 and ms < 500,
+                    mitigation_label="SRE Agent triggered",
+                    mitigation_icon="🤖",
+                )
+                grid.add_row(Panel(inc_markup,
+                    title="[bold]Incident Status[/]",
+                    border_style=inc_color, width=78, padding=(0, 1)))
+
+                # ── Latency sparkline (resident) ──
+                if checks:
+                    spark_markup = _latency_sparkline(
+                        checks,
+                        baseline_ms=healthy_baseline_ms,
+                        width=70,
+                        incident_idx=incident_started_idx,
+                        recovered_idx=recovered_idx,
+                        rollback_idx=agent_action_idx,
+                    )
+                    grid.add_row(Panel(spark_markup,
+                        title="[bold]Latency over time (resident)[/]",
+                        border_style="blue", width=78, padding=(0, 1)))
+
+                ht = Table(box=box.ROUNDED, border_style="dim", width=78)
                 ht.add_column("Time", style="dim", width=9)
                 ht.add_column("Status", width=7)
                 ht.add_column("Latency", width=10, justify="right")
                 ht.add_column("", width=8, justify="center")
-                for c in checks[-8:]:
+                ht.add_column("Marker", width=22)
+                shown = checks[-12:]
+                for idx, c in enumerate(shown):
+                    orig_idx = len(checks) - len(shown) + idx
+                    marker = ""
+                    if incident_started_idx is not None and orig_idx == incident_started_idx:
+                        marker = "[red]▼ regression[/]"
+                    elif agent_action_idx is not None and orig_idx == agent_action_idx:
+                        marker = "[yellow]▼ trigger[/]"
+                    elif recovered_idx is not None and orig_idx == recovered_idx:
+                        marker = "[green]▼ recovered[/]"
                     lc = "red" if c["code"] == 0 or c["ms"] > 2000 else "yellow" if c["ms"] > 500 else "green"
                     status = "TIMEOUT" if c["code"] == 0 else str(c["code"])
                     ht.add_row(c["ts"], status,
                                f"[{lc}]{c['ms']:.0f}ms[/]",
-                               "[red]🐌[/]" if c["slow"] else "[green]⚡[/]")
+                               "[red]🐌[/]" if c["slow"] else "[green]⚡[/]",
+                               marker)
                 grid.add_row(ht)
                 grid.add_row(timeline.render())
                 grid.add_row(Text("  [dim]q = stop load and return to menu[/]"))

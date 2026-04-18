@@ -4,6 +4,10 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
+ARG VITE_GRID_API_URL=""
+ARG VITE_OUTAGE_API_URL=""
+ENV VITE_GRID_API_URL=$VITE_GRID_API_URL
+ENV VITE_OUTAGE_API_URL=$VITE_OUTAGE_API_URL
 RUN chmod -R +x node_modules/.bin && npx vite build
 
 # ── Production stage ─────────────────────────────────────

@@ -62,12 +62,16 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
       computerName: 'grid-mgmt-01'
       adminUsername: adminUsername
       adminPassword: adminPassword
+      windowsConfiguration: {
+        provisionVMAgent: true
+        enableAutomaticUpdates: true
+      }
     }
     storageProfile: {
       imageReference: {
-        publisher: 'Canonical'
-        offer: '0001-com-ubuntu-server-jammy'
-        sku: '22_04-lts-gen2'
+        publisher: 'MicrosoftWindowsServer'
+        offer: 'WindowsServer'
+        sku: '2022-datacenter-g2'
         version: 'latest'
       }
       osDisk: {
@@ -92,11 +96,11 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-03-01' = {
 // ── Azure Monitor Agent extension ──
 resource ama 'Microsoft.Compute/virtualMachines/extensions@2024-03-01' = {
   parent: vm
-  name: 'AzureMonitorLinuxAgent'
+  name: 'AzureMonitorWindowsAgent'
   location: location
   properties: {
     publisher: 'Microsoft.Azure.Monitor'
-    type: 'AzureMonitorLinuxAgent'
+    type: 'AzureMonitorWindowsAgent'
     typeHandlerVersion: '1.0'
     autoUpgradeMinorVersion: true
   }
