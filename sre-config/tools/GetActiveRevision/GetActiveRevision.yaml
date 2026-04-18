@@ -18,7 +18,10 @@ spec:
     from azure.identity import DefaultAzureCredential
     import requests
 
+    # ===== LAB-SPECIFIC CONFIG — edit for your environment =====
+    # See sre-config/tools/README.md for the full list of values.
     SUBSCRIPTION_ID = "e964602f-6afc-4cc7-ba6b-3a796008e254"
+    # ============================================================
     API_VERSION = "2024-03-01"
 
     def get_active_revision(app_name: str, resource_group: str) -> dict:

@@ -18,9 +18,13 @@ spec:
     import base64
     import json
 
+    # ===== LAB-SPECIFIC CONFIG — edit for your environment =====
+    # See sre-config/tools/README.md for the full list of values.
     ADO_ORG = "sreagentlab"
     ADO_PROJECT = "zava-pl"
+    # ===== SECRETS — set in SRE Agent portal, not committed =====
     ADO_PAT = "<SET_VIA_SRE_AGENT_PORTAL>"
+    # ============================================================
 
     def _auth_header() -> str:
         auth = base64.b64encode(f":{ADO_PAT}".encode()).decode()

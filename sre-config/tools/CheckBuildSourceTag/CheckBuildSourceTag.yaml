@@ -20,11 +20,15 @@ spec:
     import requests
     import base64
 
+    # ===== LAB-SPECIFIC CONFIG — edit for your environment =====
+    # See sre-config/tools/README.md for the full list of values.
     ADO_ORG = "sreagentlab"
     ADO_PROJECT = "zava-pl"
+    SRE_AGENT_TAG = "sre-agent-fix"
+    # ===== SECRETS — set in SRE Agent portal, not committed =====
     ADO_PAT = "<SET_VIA_SRE_AGENT_PORTAL>"
     SRE_AGENT_SP_UPN = "<SET_VIA_SRE_AGENT_PORTAL>"
-    SRE_AGENT_TAG = "sre-agent-fix"
+    # ============================================================
 
     def _ado_get(path: str) -> dict:
         url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/{path}"
