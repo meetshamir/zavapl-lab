@@ -2592,9 +2592,9 @@ def scenario_pod_audit():
         "    [cyan]srectl chat --agent incident-handler[/]\n"
         "  ...and paste the same prompt as the scheduled task.\n\n"
         "  After the run, find the SNOW ticket here:\n"
-        f"    [cyan][link={SN_URL}/incident_list.do?sysparm_query=short_descriptionLIKEpod%20health[/link][/]\n"
+        f"    [cyan][link={SN_URL}/incident_list.do?sysparm_query=short_descriptionLIKEpod%20health]{SN_URL}/incident_list.do[/link][/]\n"
         "  And the agent thread here:\n"
-        f"    [cyan][link={SRE_AGENT_THREAD_BASE}[/link][/]",
+        f"    [cyan][link={SRE_AGENT_THREAD_BASE}]{SRE_AGENT_THREAD_BASE}[/link][/]",
         title="[bold]How to see the result[/]", border_style="cyan", width=92))
 
     if inject == "y":
