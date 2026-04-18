@@ -18,7 +18,7 @@ spec:
     import time
     import statistics
 
-    def probe_service_latency(service_name: str, url: str, path: str = "/",
+    def main(service_name: str, url: str, path: str = "/",
                               count: int = 5, timeout_s: int = 10) -> dict:
         full_url = url.rstrip("/") + "/" + path.lstrip("/")
         latencies_ms = []

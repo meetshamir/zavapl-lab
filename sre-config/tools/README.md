@@ -33,16 +33,29 @@ ADO_PAT = "<SET_VIA_SRE_AGENT_PORTAL>"
 | Tool | Key | Type | Example value |
 |---|---|---|---|
 | `GetActiveRevision` | `SUBSCRIPTION_ID` | config | `e964602f-…` (Azure subscription with the Container Apps) |
-| `CheckBuildSourceTag` | `ADO_ORG` | config | `sreagentlab` |
-| `CheckBuildSourceTag` | `ADO_PROJECT` | config | `zava-pl` |
-| `CheckBuildSourceTag` | `SRE_AGENT_TAG` | config | `sre-agent-fix` (build tag the agent attaches to fix builds) |
-| `CheckBuildSourceTag` | `ADO_PAT` | **secret** | Azure DevOps PAT with **Build (Read)** scope |
-| `CheckBuildSourceTag` | `SRE_AGENT_SP_UPN` | **secret** | UPN of the service principal the SRE Agent uses to author commits (e.g. `sre-agent@…onmicrosoft.com`) |
-| `TriggerAdoRelease` | `ADO_ORG` | config | `sreagentlab` |
-| `TriggerAdoRelease` | `ADO_PROJECT` | config | `zava-pl` |
-| `TriggerAdoRelease` | `ADO_PAT` | **secret** | Azure DevOps PAT with **Build (Read & execute)** + **Release (Read, write & execute)** scopes |
 | `ProbeServiceLatency` | — | (no config) | URL passed as a runtime parameter — fully portable |
 | `BurstLoadTest` | — | (no config) | URL passed as a runtime parameter — fully portable |
+
+> **Note on ADO operations.** The `release-orchestrator` agent and the
+> `release-on-sre-fix` skill use the runtime's **built-in ADO MCP
+> tools** (`GetPipelineRunHistory`, the run-pipeline tool, etc.) which
+> are pre-authenticated via delegated OAuth — **no PAT and no extra MI
+> setup required**. We deliberately do NOT ship custom PythonTools that
+> wrap ADO REST, because:
+> - PAT requires you to manage a secret.
+> - DefaultAzureCredential gets a token for the SRE Agent's MI, but
+>   that MI is not a member of the ADO org by default, so calls fail
+>   with `TF401444`.
+>
+> If you fork this lab into an environment where built-in ADO MCP
+> tools are unavailable, you have two options:
+> 1. Add the SRE Agent's MI as a user in your ADO org
+>    (`dev.azure.com/<org>/_settings/users`, give Basic access + the
+>    Build/Release scopes you need), then write PythonTools that use
+>    `DefaultAzureCredential` against ADO resource UUID
+>    `499b84ac-1321-427f-aa17-267ca6975798`.
+> 2. Or write PythonTools that use a PAT (committed as a placeholder,
+>    set in the SRE Agent portal at runtime).
 
 ### Pre-existing tools that also need lab-specific edits
 
@@ -97,7 +110,7 @@ Beyond the per-tool secrets above, you also need:
 cd sre-config
 # 1. Edit each tool YAML's LAB-SPECIFIC CONFIG block per the table above.
 # 2. Validate then apply each tool:
-foreach ($t in 'ProbeServiceLatency','BurstLoadTest','GetActiveRevision','CheckBuildSourceTag','TriggerAdoRelease') {
+foreach ($t in 'ProbeServiceLatency','BurstLoadTest','GetActiveRevision') {
   srectl tool validate --name $t
   srectl tool apply    --name $t
 }

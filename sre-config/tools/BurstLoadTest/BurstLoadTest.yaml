@@ -23,7 +23,7 @@ spec:
     import concurrent.futures
     import threading
 
-    def burst_load_test(url: str, path: str = "/",
+    def main(url: str, path: str = "/",
                         concurrency: int = 10, duration_s: int = 15,
                         timeout_s: int = 10) -> dict:
         full_url = url.rstrip("/") + "/" + path.lstrip("/")

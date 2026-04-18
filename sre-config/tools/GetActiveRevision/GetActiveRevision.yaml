@@ -24,7 +24,7 @@ spec:
     # ============================================================
     API_VERSION = "2024-03-01"
 
-    def get_active_revision(app_name: str, resource_group: str) -> dict:
+    def main(app_name: str, resource_group: str) -> dict:
         try:
             cred = DefaultAzureCredential()
             token = cred.get_token("https://management.azure.com/.default").token

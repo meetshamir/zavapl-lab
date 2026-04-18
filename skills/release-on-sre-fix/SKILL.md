@@ -9,7 +9,8 @@ description: |
   PowerGrid-Release. It triggers ONLY for SRE-Agent-authored fixes
   (identified via ADO build tag 'sre-agent-fix' or service-principal
   requestedFor). Human developer commits flow through normal CI/CD
-  gates and are NOT auto-released by this agent.
+  gates and are NOT auto-released by this agent. Uses the runtime's
+  built-in ADO MCP tools (delegated OAuth) — no PAT required.
 ---
 
 # Release on SRE Fix
@@ -25,53 +26,78 @@ Without this skill, every successful build (including human dev
 commits) would auto-release. We want auto-release ONLY for SRE-Agent
 fixes that have already been validated by the agent's own diagnosis.
 
+## Configuration (lab-specific — edit for your environment)
+- **SRE Agent service principal UPN** (used to identify SRE-authored
+  builds when the `sre-agent-fix` tag is missing): set this in your
+  agent prose, e.g. `sre-agent@yourtenant.onmicrosoft.com`. If your
+  PR-creation flow always tags the resulting build with
+  `sre-agent-fix`, the SP UPN check is optional.
+- **Build pipeline ID**: 4 (PowerGrid-Build) — this lab.
+- **Release pipeline ID**: 5 (PowerGrid-Release) — this lab.
+
 ## Decision flow
 
-### 1. Check the build's source
-Call:
+### 1. Read the build
+Use the built-in ADO MCP tool **`GetPipelineRunHistory`** on
+PowerGrid-Build (ID 4), filtered to the run that triggered the event.
+Capture:
+- `tags` (array of strings)
+- `requestedFor.uniqueName`
+- `result` (must be `succeeded`)
 
+### 2. Idempotency check
+If `tags` already contains a value matching `sre-agent-release-*`, a
+release has already been triggered for this build. Post Teams note
+"release already in flight" and EXIT.
+
+### 3. Determine is_sre_agent_fix
 ```
-CheckBuildSourceTag(build_id)
-```
-
-Returns `is_sre_agent_fix: true|false` based on:
-- ADO build tag `sre-agent-fix` present, OR
-- `requestedFor.uniqueName` matches the SRE Agent service principal
-  UPN (configured in the tool YAML).
-
-### 2. Decision matrix
-
-| `is_sre_agent_fix` | Action |
-|---|---|
-| `true`  | Trigger release (proceed to step 3) |
-| `false` | NO ACTION. Post a Teams note: "Build #N succeeded — human-author build, leaving release to normal CI/CD." Then exit. |
-
-### 3. Trigger PowerGrid-Release for the SRE-Agent build
-Call:
-
-```
-TriggerAdoRelease(release_pipeline_id="5",
-                  build_id=<the BuildSucceeded build_id>,
-                  reason="auto-release of SRE-Agent fix for buildId=<id>")
+is_sre_agent_fix =
+  ('sre-agent-fix' in tags)
+  OR
+  (requestedFor.uniqueName.lower() == SRE_AGENT_SP_UPN.lower())
 ```
 
-This sets a `sre-agent-release-<release_id>` audit tag on the source
-build so the chain (incident → fix PR → build → release) is traceable.
+### 4. Decision matrix
 
-### 4. Post to Teams
-"🤖 Auto-release triggered: PowerGrid-Release run #<release_id>
-materializing SRE-Agent fix from build #<build_id>. The
+| `result == succeeded` | `is_sre_agent_fix` | Action |
+|---|---|---|
+| no  | any   | Post Teams note "build N did not succeed; nothing to release", exit. |
+| yes | false | Post Teams note "Build #N succeeded — human-author build, leaving release to normal CI/CD", exit. |
+| yes | true  | Proceed to step 5. |
+
+### 5. Trigger PowerGrid-Release
+Use the built-in ADO MCP run-pipeline tool (the same one the
+pipeline-failure-investigator agent uses for `TriggerBuildPipelineRun`
+— there is an equivalent for the release pipeline) to start
+PowerGrid-Release (pipeline ID 5) with variables:
+- `SOURCE_BUILD_ID = <build_id>`
+- `TRIGGERED_BY    = sre-agent`
+- `REASON          = auto-release of SRE-Agent fix for buildId=<id>`
+
+Then add an audit tag to the SOURCE build (best-effort): tag value
+`sre-agent-release-<release_id>`. Use the built-in ADO MCP add-tag
+tool.
+
+### 6. Post to Teams
+"🤖 Auto-release triggered: PowerGrid-Release run #&lt;release_id&gt;
+materializing SRE-Agent fix from build #&lt;build_id&gt;. The
 deployment-validator agent will validate post-deploy."
 
-Done. The deployment-validator agent will pick up the resulting
-ReleaseSucceeded event using the `deployment-validation` skill.
+EXIT. The deployment-validator agent picks up from ReleaseSucceeded.
+
+## Why no custom PythonTool
+The SRE Agent runtime exposes ADO operations through built-in MCP
+tools that are pre-authenticated via delegated OAuth. Custom
+PythonTools that call ADO directly require either a PAT (a secret to
+manage) or the agent's managed identity to be added as a user in the
+ADO org (extra setup). Built-in MCP tools require neither.
 
 ## Loop-safety notes
 - Never trigger a release for a build that wasn't tagged — even if
   the build originated from an SRE-Agent-authored commit, untagged
   builds suggest something is off; let humans investigate.
-- Never trigger a release if the build's `result != succeeded` (the
-  CheckBuildSourceTag tool returns this; if not "succeeded", abort).
+- Never trigger a release if `result != succeeded`.
 - Do not chain triggers: this agent does not trigger another build
   from a release (the deployment-validator handles rollback +
   fix-PR + new build chain on regression).
