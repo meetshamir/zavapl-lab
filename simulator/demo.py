@@ -821,22 +821,10 @@ def run_build_release(failure_scenario, services):
         console.input("[dim]  Press Enter...[/]"); return None
 
     console.print("[green]  ✓ Build succeeded![/]\n")
-    console.print("[bold cyan]  ▶ Waiting for PowerGrid-Release auto-trigger (build→release chaining)...[/]")
-
-    release_id = None
-    deadline = time.time() + 90
-    while time.time() < deadline:
-        rid, status, _ = poll_latest_pipeline_run("PowerGrid-Release", sim_start)
-        if rid:
-            release_id = rid
-            break
-        time.sleep(5)
-
+    console.print("[bold cyan]  ▶ Triggering PowerGrid-Release...[/]")
+    release_id = run_ado_pipeline("PowerGrid-Release")
     if not release_id:
-        console.print("[yellow]  ⚠ Release did not auto-trigger within 90s — falling back to manual trigger[/]")
-        release_id = run_ado_pipeline("PowerGrid-Release")
-        if not release_id:
-            console.input("[dim]  Press Enter...[/]"); return None
+        console.input("[dim]  Press Enter...[/]"); return None
 
     release_url = ado_pipeline_url(release_id)
     console.print(f"[green]  ✓ Release #{release_id} started[/]  "
