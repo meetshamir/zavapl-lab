@@ -490,23 +490,31 @@ def render_incident_snapshot(service_name, checks, timeline,
     (renders nothing) or when recovery did not happen (renders nothing —
     the realtime view is still the source of truth in that case).
     """
-    if incident_started_ts is None or recovered_ts is None or not checks:
+    # Render whenever an incident was observed, even if SRE Agent never
+    # mitigated/recovered — so users who quit mid-incident still get a
+    # snapshot of what they saw. Recovery-specific lines are conditional.
+    if incident_started_ts is None or not checks:
         return
 
     fmt = "%H:%M:%S"
+    recovered = recovered_ts is not None
     detect_to_mit = ((mitigation_ts - incident_started_ts).total_seconds()
                      if mitigation_ts and mitigation_ts >= incident_started_ts else None)
     mit_to_rec = ((recovered_ts - mitigation_ts).total_seconds()
-                  if mitigation_ts and recovered_ts >= mitigation_ts else None)
-    mttr = (recovered_ts - incident_started_ts).total_seconds()
+                  if recovered and mitigation_ts and recovered_ts >= mitigation_ts else None)
+    mttr = (recovered_ts - incident_started_ts).total_seconds() if recovered else None
 
     # ── Header banner ─────────────────────────────────────────
+    status_line = ("[dim]Static post-incident view of the full lifecycle. "
+                   "The realtime graph above remained live throughout the incident.[/]"
+                   if recovered else
+                   "[bold yellow]⚠ Incident did NOT recover before snapshot[/] "
+                   "[dim](you quit, or the loop exited before SRE Agent rolled back).[/]")
     console.print()
     console.print(Panel(
-        f"[bold cyan]📸 INCIDENT SNAPSHOT[/]  —  [bold]{service_name}[/]\n"
-        f"[dim]Static post-incident view of the full lifecycle. "
-        f"The realtime graph above remained live throughout the incident.[/]",
-        border_style="cyan", width=92, padding=(0, 1),
+        f"[bold cyan]📸 INCIDENT SNAPSHOT[/]  —  [bold]{service_name}[/]\n{status_line}",
+        border_style="cyan" if recovered else "yellow",
+        width=92, padding=(0, 1),
     ))
 
     # ── MTTR breakdown ────────────────────────────────────────
@@ -522,13 +530,26 @@ def render_incident_snapshot(service_name, checks, timeline,
             mttr_bits.append(f"  [yellow]●[/] [bold]{mitigation_label}[/]  "
                              f"{mitigation_ts.strftime(fmt)}   "
                              f"[dim](pre-existing thread)[/]")
-    mttr_bits.append(f"  [green]●[/] [bold]Recovered[/]   {recovered_ts.strftime(fmt)}"
-                     + (f"   [dim](+{int(mit_to_rec)}s after mitigation)[/]"
-                        if mit_to_rec is not None and mit_to_rec >= 0 else ""))
+    else:
+        mttr_bits.append(f"  [dim]○[/] [bold]{mitigation_label}[/]  "
+                         f"[yellow](did not occur during this run)[/]")
+    if recovered:
+        mttr_bits.append(f"  [green]●[/] [bold]Recovered[/]   {recovered_ts.strftime(fmt)}"
+                         + (f"   [dim](+{int(mit_to_rec)}s after mitigation)[/]"
+                            if mit_to_rec is not None and mit_to_rec >= 0 else ""))
+    else:
+        elapsed = int((datetime.now() - incident_started_ts).total_seconds())
+        mttr_bits.append(f"  [red]●[/] [bold]Still degraded[/]  "
+                         f"[red]{elapsed}s elapsed[/]   [dim](no recovery yet)[/]")
     mttr_bits.append("")
-    mttr_bits.append(f"  [bold]MTTR (detect → recovery):[/]  [green bold]{int(mttr)}s[/]"
-                     + (f"   [dim]baseline {int(healthy_baseline)}{unit}[/]"
-                        if healthy_baseline else ""))
+    if recovered:
+        mttr_bits.append(f"  [bold]MTTR (detect → recovery):[/]  [green bold]{int(mttr)}s[/]"
+                         + (f"   [dim]baseline {int(healthy_baseline)}{unit}[/]"
+                            if healthy_baseline else ""))
+    else:
+        mttr_bits.append(f"  [bold]MTTR:[/]  [yellow]N/A — incident open[/]"
+                         + (f"   [dim]baseline {int(healthy_baseline)}{unit}[/]"
+                            if healthy_baseline else ""))
     console.print(Panel("\n".join(mttr_bits),
         title="[bold]Lifecycle Summary[/]",
         border_style="green", width=92, padding=(0, 1)))
@@ -737,7 +758,7 @@ def poll_pipeline(run_id, label):
     last_poll = 0
     status, result = "queued", ""
 
-    with Live(console=console, refresh_per_second=4, vertical_overflow="visible") as live:
+    with Live(console=console, refresh_per_second=4) as live:
         while True:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -979,7 +1000,7 @@ def monitor_health(url, path, service_name, agent_name,
     healthy_baseline_ms = None
     baseline_samples = []
 
-    with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
+    with Live(console=console, refresh_per_second=2) as live:
         while not recovered:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -1243,7 +1264,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             bits.append(f"{mark} [{color}]{name}[/]")
         return "  " + "  →  ".join(bits)
 
-    with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
+    with Live(console=console, refresh_per_second=2) as live:
         while not overall_done:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -1823,7 +1844,7 @@ def scenario_disk():
     healthy_baseline_pct = None
     consecutive_ok = 0
 
-    with Live(console=console, refresh_per_second=1, vertical_overflow="visible") as live:
+    with Live(console=console, refresh_per_second=1) as live:
         while not recovered:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -2181,7 +2202,7 @@ def scenario_load():
     SRE_TRIGGER_URL = "https://sre-zavapower-ops--5a379588.bc75887b.eastus2.azuresre.ai/api/v1/httptriggers/trigger/9a276c65-c2ed-4e6e-b478-07e79a85a495"
 
     try:
-        with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
+        with Live(console=console, refresh_per_second=2) as live:
             while True:
                 key = check_key()
                 if key in (b"q", b"Q"):
@@ -2547,7 +2568,7 @@ def scenario_servicenow():
 
     # Live poll until resolved
     try:
-        with Live(console=console, refresh_per_second=1, vertical_overflow="visible") as live:
+        with Live(console=console, refresh_per_second=1) as live:
             while True:
                 key = check_key()
                 if key in (b"q", b"Q"):
