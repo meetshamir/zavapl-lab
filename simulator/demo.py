@@ -284,6 +284,129 @@ def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
     return ok
 
 # ── Event Timeline ──────────────────────────────────────────
+def _latency_sparkline(checks, baseline_ms=None, width=70,
+                       incident_idx=None, recovered_idx=None,
+                       rollback_idx=None):
+    """Render a colored ASCII sparkline of latency over time, with
+    event markers for incident-start, rollback, and recovery.
+
+    Returns a Rich-markup string. Color encoding:
+      red   = unhealthy probe
+      green = healthy probe
+      cyan  = baseline reference line
+    Vertical markers (▼) above the row mark events.
+    """
+    if not checks:
+        return "[dim]  (no probes yet)[/]"
+    blocks = "▁▂▃▄▅▆▇█"
+    n = len(checks)
+    # Downsample to `width` if longer
+    step = max(1.0, n / float(width))
+    sampled = []
+    sample_src_idx = []
+    i = 0.0
+    while int(i) < n and len(sampled) < width:
+        sampled.append(checks[int(i)])
+        sample_src_idx.append(int(i))
+        i += step
+    # Scale: 0 → max(samples, baseline*8), so the sparkline shows
+    # the regression dramatically vs. healthy baseline.
+    max_ms = max(c["ms"] for c in sampled)
+    scale_top = max(max_ms,
+                    (baseline_ms or 0) * 8 if baseline_ms else max_ms,
+                    1.0)
+    scale_top = max(scale_top, 100.0)  # avoid divide-by-near-zero
+    # Build marker row (event annotations above the sparkline)
+    def find_sampled_idx(src_idx):
+        if src_idx is None:
+            return None
+        # closest sampled index
+        for k, s in enumerate(sample_src_idx):
+            if s >= src_idx:
+                return k
+        return None
+    inc_k = find_sampled_idx(incident_idx)
+    rec_k = find_sampled_idx(recovered_idx)
+    rb_k  = find_sampled_idx(rollback_idx) if rollback_idx is not None else None
+    # Marker line
+    marker_chars = [" "] * len(sampled)
+    if inc_k is not None and inc_k < len(marker_chars):
+        marker_chars[inc_k] = "[red]▼[/]"
+    if rb_k  is not None and rb_k  < len(marker_chars):
+        marker_chars[rb_k]  = "[yellow]▼[/]"
+    if rec_k is not None and rec_k < len(marker_chars):
+        marker_chars[rec_k] = "[green]▼[/]"
+    marker_line = "  " + "".join(marker_chars)
+    # Spark line
+    spark = []
+    for c in sampled:
+        # 0..7 index into blocks
+        idx = int(min(7, (c["ms"] / scale_top) * 7))
+        ch = blocks[max(0, idx)]
+        col = "green" if c["ok"] else "red"
+        spark.append(f"[{col}]{ch}[/]")
+    spark_line = "  " + "".join(spark)
+    # Y-axis hint (peak + baseline)
+    legend_bits = [f"peak {int(max_ms)}ms"]
+    if baseline_ms:
+        legend_bits.append(f"baseline {int(baseline_ms)}ms")
+    legend_bits.append(f"scale 0–{int(scale_top)}ms")
+    legend = "  [dim]" + "  •  ".join(legend_bits) + "[/]"
+    # Marker legend if any present
+    mleg = []
+    if inc_k is not None: mleg.append("[red]▼[/] regression")
+    if rb_k  is not None: mleg.append("[yellow]▼[/] rollback")
+    if rec_k is not None: mleg.append("[green]▼[/] recovered")
+    mleg_line = "  " + "  ".join(mleg) if mleg else ""
+    parts = [marker_line, spark_line, legend]
+    if mleg_line:
+        parts.append(mleg_line)
+    return "\n".join(parts)
+
+
+def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
+                            recovered_ts, incident_peak_ms,
+                            healthy_baseline_ms, current_healthy):
+    """Returns (markup, status_color). Renders an incident-status summary."""
+    if incident_started_ts is None:
+        return ("  [green]✅ No incident detected — service operating normally.[/]",
+                "green")
+    fmt = "%H:%M:%S"
+    bits = []
+    bits.append(f"  [red bold]⚠ Regression started:[/]   "
+                f"[bold]{incident_started_ts.strftime(fmt)}[/]"
+                f"   peak [red]{int(incident_peak_ms)}ms[/]")
+    if rollback_ts:
+        d_to_rb = (rollback_ts - incident_started_ts).total_seconds()
+        bits.append(f"  [yellow bold]♻️  SRE Agent rollback:[/]  "
+                    f"[bold]{rollback_ts.strftime(fmt)}[/]"
+                    f"   [dim](+{int(d_to_rb)}s after onset)[/]")
+    else:
+        bits.append("  [yellow]♻️  SRE Agent rollback:[/]  [dim]waiting for revision change…[/]")
+    if recovered_ts:
+        d_total = (recovered_ts - incident_started_ts).total_seconds()
+        bits.append(f"  [green bold]✅ Recovered:[/]            "
+                    f"[bold]{recovered_ts.strftime(fmt)}[/]"
+                    f"   total downtime [green]{int(d_total)}s[/]")
+    else:
+        # still in incident
+        elapsed = (datetime.now() - incident_started_ts).total_seconds()
+        bits.append(f"  [red]⏱  Still degraded:[/]       "
+                    f"[bold]{int(elapsed)}s elapsed[/]   "
+                    f"[dim](recovery threshold = {RECOVERY_THRESHOLD} consecutive healthy probes)[/]")
+    if healthy_baseline_ms:
+        bits.append(f"  [dim]Baseline (pre-incident):  {int(healthy_baseline_ms)}ms[/]")
+    # Current
+    if recovered_ts and current_healthy:
+        bits.append("  [green bold]Current status:[/]         [green]🟢 SERVING NORMALLY[/]")
+    elif current_healthy:
+        bits.append("  [green]Current status:[/]         [green]🟢 healthy probe[/]")
+    else:
+        bits.append("  [red bold]Current status:[/]         [red]🔴 DEGRADED[/]")
+    return ("\n".join(bits), "red" if not recovered_ts else "green")
+
+
+# ── Event Timeline ──────────────────────────────────────────
 class EventTimeline:
     def __init__(self):
         self.events = []
@@ -825,7 +948,14 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
     rollback_revision = None       # set when active rev changes again (back to pre or new)
     last_revision_poll = datetime.min
 
-    checks = []
+    checks = []                    # full incident lifecycle (bounded below)
+    healthy_baseline_ms = None     # rolling min from first 5 probes
+    incident_started_ts = None     # first time we saw unhealthy
+    incident_started_idx = None    # index in `checks` where incident began
+    rollback_ts = None             # wall time of the real revision-change rollback
+    recovered_ts = None            # first sustained-healthy timestamp post-incident
+    recovered_idx = None
+    incident_peak_ms = 0           # worst latency observed during incident
     had_unhealthy = False
     consecutive_ok = 0
     alert_fired = False
@@ -868,19 +998,44 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             # ---- health probe ----
             code, ms = health_check(url, path)
             healthy = healthy_fn(code, ms)
-            checks.append({"ts": datetime.now().strftime("%H:%M:%S"),
+            checks.append({"ts_str": datetime.now().strftime("%H:%M:%S"),
+                           "ts": datetime.now(),
                            "code": code, "ms": ms, "ok": healthy})
-            if len(checks) > 20:
+            # Bounded history — keep up to 240 samples (~8 min @ 2s probe)
+            if len(checks) > 240:
                 checks.pop(0)
+                if incident_started_idx is not None:
+                    incident_started_idx -= 1
+                if recovered_idx is not None:
+                    recovered_idx -= 1
+
+            # Healthy baseline from first 5 healthy samples
+            if healthy_baseline_ms is None and healthy:
+                ok_msl = [c["ms"] for c in checks if c["ok"]]
+                if len(ok_msl) >= 5:
+                    healthy_baseline_ms = sum(ok_msl[:5]) / 5.0
 
             if not healthy:
                 had_unhealthy = True
                 consecutive_ok = 0
+                if incident_started_ts is None:
+                    incident_started_ts = datetime.now()
+                    incident_started_idx = len(checks) - 1
+                if ms > incident_peak_ms:
+                    incident_peak_ms = ms
                 if not phases["detected"]:
                     phases["detected"] = True
                     timeline.add(f"❌ Regression detected on {service_name} ({code}/{ms:.0f}ms)", "red bold")
             else:
                 consecutive_ok += 1
+                if incident_started_ts and recovered_ts is None \
+                        and consecutive_ok >= RECOVERY_THRESHOLD:
+                    recovered_ts = datetime.now()
+                    recovered_idx = len(checks) - 1
+                    dur = (recovered_ts - incident_started_ts).total_seconds()
+                    timeline.add(
+                        f"✅ Service recovered — incident lasted {dur:.0f}s "
+                        f"(peak {incident_peak_ms:.0f}ms)", "green bold")
 
             # ---- alert detection ----
             if alert_name and not alert_fired and (now - last_alert_poll).seconds >= 10:
@@ -952,6 +1107,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                                 f"📦 New revision active: {cur}", "dim")
                         elif deployed_revision and cur != deployed_revision:
                             rollback_revision = cur
+                            rollback_ts = datetime.now()
                             phases["rollback"] = True
                             phases["restored"] = (consecutive_ok >= RECOVERY_THRESHOLD)
                             target = "previous" if cur == pre_deploy_revision else "new"
@@ -999,8 +1155,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             if phases["redeploy"] and not phases["revalidate"]:
                 # Fresh consecutive-ok count after redeploy time
                 ok_after = sum(1 for c in checks
-                               if c["ok"] and datetime.strptime(c["ts"], "%H:%M:%S").time()
-                               >= new_release_seen_at.time())
+                               if c["ok"] and c["ts"] >= new_release_seen_at)
                 if ok_after >= RECOVERY_THRESHOLD:
                     phases["revalidate"] = True
                     timeline.add(f"🎉 Re-validation passed — fix verified by deployment-validator", "green bold")
@@ -1032,15 +1187,55 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                 f"  {icon} [{color} bold]{service_name}: {label}[/] "
                 f"({code} / {ms:.0f}ms)"))
 
-            ht = Table(box=box.ROUNDED, border_style="dim", width=64)
+            # ---- Incident summary panel (resident throughout lifecycle) ----
+            summary_markup, summary_color = _incident_summary_panel(
+                service_name, incident_started_ts, rollback_ts, recovered_ts,
+                incident_peak_ms, healthy_baseline_ms, healthy)
+            grid.add_row(Panel(
+                summary_markup,
+                title="[bold]Incident Status[/]",
+                border_style=summary_color, width=92, padding=(0, 1)))
+
+            # ---- Latency sparkline (resident throughout lifecycle) ----
+            # Map rollback_ts to its index in `checks`
+            rollback_idx = None
+            if rollback_ts:
+                for k, c in enumerate(checks):
+                    if c["ts"] >= rollback_ts:
+                        rollback_idx = k
+                        break
+            spark_markup = _latency_sparkline(
+                checks, healthy_baseline_ms, width=78,
+                incident_idx=incident_started_idx,
+                recovered_idx=recovered_idx,
+                rollback_idx=rollback_idx)
+            grid.add_row(Panel(
+                spark_markup,
+                title=f"[bold]Latency Graph[/]  ([dim]{len(checks)} probes[/])",
+                border_style="cyan", width=92, padding=(0, 1)))
+
+            # ---- Probe history table (last 10 incl. event-bracketing rows) ----
+            ht = Table(box=box.ROUNDED, border_style="dim", width=80)
             ht.add_column("Time", style="dim", width=9)
             ht.add_column("Status", width=7, justify="center")
             ht.add_column("Latency", width=10, justify="right")
             ht.add_column("Result", width=10, justify="center")
-            for c in checks[-8:]:
+            ht.add_column("Marker", style="dim", width=22)
+            tail = checks[-10:]
+            tail_offset = len(checks) - len(tail)
+            for k, c in enumerate(tail):
+                global_idx = tail_offset + k
                 sc = "green" if c["ok"] else "red"
-                ht.add_row(c["ts"], f"[{sc}]{c['code']}[/]", f"{c['ms']:.0f}ms",
-                           f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]")
+                marker = ""
+                if global_idx == incident_started_idx:
+                    marker = "[red]◀ regression start[/]"
+                elif rollback_idx is not None and global_idx == rollback_idx:
+                    marker = "[yellow]◀ SRE rollback[/]"
+                elif global_idx == recovered_idx:
+                    marker = "[green]◀ recovered[/]"
+                ht.add_row(c["ts_str"], f"[{sc}]{c['code']}[/]", f"{c['ms']:.0f}ms",
+                           f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]",
+                           marker)
             grid.add_row(ht)
 
             # Artifacts panel
