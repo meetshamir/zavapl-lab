@@ -1906,6 +1906,7 @@ def scenario_reset():
         "\n  Restoring all services to healthy baseline.\n"
         "  This will:\n"
         "  - Wake up ServiceNow PDI (if sleeping)\n"
+        "  - Roll back all Container Apps to :stable image\n"
         "  - Reset all Container App environment variables\n"
         "  - Reset grid-status-api replicas and CPU to baseline\n"
         "  - Disable chaos mode (if active)\n"
@@ -1928,6 +1929,39 @@ def scenario_reset():
         console.print("[green] ✓ awake[/]")
     else:
         console.print(f"[yellow] ⚠ {sn_detail} (wake at developer.servicenow.com)[/]")
+
+    # ── Roll back ALL container apps to :stable image ──
+    # The :stable tag in ACR is the known-good baseline image. Any time we
+    # reset, we revert to it so a previous broken-deploy scenario can't leave
+    # the lab in a bad state. (Bootstrap once via:
+    #   az acr import --name acrpowergrid \
+    #     --source acrpowergrid.azurecr.io/<svc>:<good-build-id> \
+    #     --image <svc>:stable --force)
+    console.print("[bold cyan]  ▶ Rolling all container apps back to :stable image...[/]")
+    stable_targets = [
+        ("outage-api",       f"ca-{WORKLOAD}-outage", "outage-api"),
+        ("grid-status-api",  f"ca-{WORKLOAD}-grid",   "grid-status-api"),
+        ("notification-svc", f"ca-{WORKLOAD}-notify", "notification-svc"),
+        ("meter-api",        f"ca-{WORKLOAD}-meter",  "meter-api"),
+    ]
+    for label, app, repo in stable_targets:
+        image = f"acrpowergrid.azurecr.io/{repo}:stable"
+        ok, _out, err = run_az(
+            ["az", "containerapp", "update", "-n", app, "-g", rg,
+             "--image", image, "--output", "none"],
+            timeout=120, retries=1,
+        )
+        if ok:
+            console.print(f"[green]  ✓ {label} → :stable[/]")
+        else:
+            # If :stable doesn't exist yet for this repo, surface a helpful
+            # one-time bootstrap hint instead of a cryptic error.
+            hint = ""
+            if "MANIFEST_UNKNOWN" in (err or "") or "not found" in (err or "").lower():
+                hint = (f" — bootstrap with: az acr import --name acrpowergrid "
+                        f"--source acrpowergrid.azurecr.io/{repo}:<known-good-id> "
+                        f"--image {repo}:stable --force")
+            console.print(f"[yellow]  ⚠ {label} image rollback: {err[:80]}{hint}[/]")
 
     # ── Reset Container App env vars and scale settings ──
     # Each entry: (label, az args list)
