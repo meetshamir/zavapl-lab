@@ -45,12 +45,27 @@ spec:
           pipeline-failure-investigator.
 
     A2. HEALTH-CHECK EACH DEPLOYED SERVICE
-        For every service identified in A1:
-        - outage-api:       GET /health AND GET /outages
-        - meter-api:        GET /health AND GET /usage
-        - grid-status-api:  GET /health AND GET /regions (verify P95 < 1s)
+        IMPORTANT — TELEMETRY LAG:
+        Application Insights and Log Analytics ingestion lag is 2-5 minutes.
+        Querying App Insights immediately after deploy will return STALE data
+        from the OLD revision and falsely declare success. To avoid this:
+
+        1. ACTIVE PROBES FIRST (ground truth, no lag):
+           Issue 5 sequential HTTPS GETs against each service's primary
+           endpoint and measure wall-clock latency yourself. If ANY probe
+           takes > 1500 ms, treat as a regression — DO NOT wait for telemetry.
+        2. THEN App Insights for confirmation, scoped to AFTER the new
+           revision became active (use the deploy_time from A1).
+           If App Insights returns < 5 requests for the new revision in the
+           last 5 min, ingestion has not caught up — rely on (1) only.
+
+        Per service:
+        - outage-api:       GET /health AND GET /outages   (P95 active < 1s)
+        - meter-api:        GET /health AND GET /api/meters/1/readings
+        - grid-status-api:  GET /health AND GET /regions   (P95 active < 1s)
         - notification-svc: check container revision health (internal-only;
-          use ACA revision API not HTTP)
+          use ACA revision API not HTTP). Verify healthState=Healthy AND
+          runningState=Running AND provisioningState=Provisioned.
         - portal-web:       GET / (verify the page loads)
 
     A3. IF ALL HEALTHY → DONE
