@@ -77,19 +77,13 @@ runtime env vars), so the diff must inspect actual code:
   a. Get the build commit SHA from the failing build via
      `GetPipelineRunHistory` on **PowerGrid-Build** → `sourceVersion`,
      plus the previous healthy build's SHA.
-  b. Browse the failing service's source dir (e.g.
-     `src/notification-svc/`) for changed constants — URLs, ports,
-     hostnames, feature flags.
+  b. Browse the failing service's source dir for changed constants —
+     URLs, ports, hostnames, feature flags, timeout values.
   c. The actual failure path is usually a downstream call that times
      out or refuses connection because the constant points to the
      wrong endpoint. Trace it back to its declaration site.
-  d. Quote the offending line(s) (≤5 lines) and the dependent call.
-     Example for a wrong gateway port:
-     ```go
-     // src/notification-svc/main.go:35  (commit abc1234)
-     const gatewayURL = "http://notification-gateway.internal:9443/api/v2/send"
-     // INFRA-3291 migration; old port 8443 is closed in production
-     ```
+  d. Quote the offending line(s) (≤5 lines) verbatim from the file,
+     with file path and line numbers, plus the dependent call site.
   e. State the mechanism: WHICH constant changed, WHERE it's used,
      WHY the new value is wrong (port closed, host renamed, TLS
      mismatch, etc.), and HOW the failure surfaces (timeout, conn
@@ -97,31 +91,25 @@ runtime env vars), so the diff must inspect actual code:
 
 ## Output to caller
 
+Output schema (fill from your investigation — do NOT invent values):
+
 ```
 CONFIG REGRESSION RCA
-  service:        notification-svc
-  revision:       ca-powergrid-notify--0000017
-  deploy_time:    21:02 UTC
-  symptom:        every POST /send returns 503 after ~5s timeout
-  count_5min:     94
-  prior revision: gatewayURL = ":8443"  (worked fine)
+  service:        <container app name>
+  revision:       <new revision name>
+  deploy_time:    <UTC timestamp>
+  symptom:        <which endpoint, status code, response time pattern>
+  count_5min:     <failed-request count>
+  prior revision: <the constant's prior value, if known>
   code_cause:     |
-    src/notification-svc/main.go line 35 (commit abc1234, build #44,
-    INFRA-3291 TLS-1.3 migration):
+    <file path>:<line>
+    (commit <sha>, build #<n>):
 
-      const gatewayURL = "http://notification-gateway.internal:9443/api/v2/send"
+      <verbatim ≤5 lines of source from that location>
 
-    The internal gateway listens on port 8443 in production; port
-    9443 was the staging endpoint during the migration window and
-    was never opened in prod. The /send handler dials this URL on
-    every request and times out after ~5s, returning 503 to the
-    caller. Health check passes because it doesn't exercise the
-    downstream call.
-  fix direction: revert the constant to `:8443`; OR (better) move
-                 the gateway URL into a runtime config so it can be
-                 changed without a redeploy, and add a
-                 startup-time TCP connect probe so the service fails
-                 fast instead of passing health checks.
+    <Plain-English mechanism: WHICH constant changed, WHERE it's used,
+     WHY the new value is wrong, HOW the failure surfaces.>
+  fix direction: <one or more concrete options>
 ```
 
 Hand off to `deployment-rollback` → `servicenow-incident-mgmt` →

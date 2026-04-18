@@ -38,12 +38,14 @@ Use it to create, update, and resolve incidents with a complete audit trail.
 3. Include the incident URL in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
 
 ### Adding Work Notes (Audit Trail)
-Use UpdateServiceNowWorkNotes at each investigation phase:
-- "Investigating: Querying App Insights for error traces..."
-- "Finding: AttributeError in outage-api at line 116, crew_status is None"
-- "Correlation: Regression from ADO pipeline run #47 (commit abc123)"
-- "Remediation: Rolled back to previous Container App revision"
-- "Validation: /outages endpoint returns HTTP 200, service restored"
+Use UpdateServiceNowWorkNotes at each investigation phase. Each note
+should be a concrete observation from your investigation — not a
+template phrase. Suggested phases:
+- "Investigating: <what query / what tool>..."
+- "Finding: <specific exception/log/metric with file:line if applicable>"
+- "Correlation: <build/commit/revision tied to onset>"
+- "Remediation: <what action was taken>"
+- "Validation: <which probe passed, which metric returned to baseline>"
 
 ### Resolving an Incident
 Use ResolveServiceNowIncident with:
@@ -157,45 +159,20 @@ requests affected, etc.). If the cause is a config/env delta, also
 include `config_delta` showing old → new value and the deploy
 artifact line that introduced it.>
 
-Example (perf regression):
-"src/grid-status-api/server.js — `computeGridChecksum()` (commit
-abc1234, build #44, added per ticket SEC-2847) runs a synchronous
-SHA-256 hash chain on every request:
+Required shape (fill from the diagnosis skill's `code_cause` block —
+do NOT invent values, do NOT paraphrase):
 
-```js
-function computeGridChecksum(data) {
-  let checksum = JSON.stringify(data);
-  for (let i = 0; i < 750000; i++) {
-    checksum = crypto.createHash('sha256').update(checksum).digest('hex');
-  }
-  return checksum;
-}
+"<file path>:<line range> — `<function name>` (commit <sha>, build
+#<n>) <one-line description of the change>:
+
+```<lang>
+<verbatim ≤5 lines of source from that location>
 ```
 
-Called from the /regions and /capacity handlers. The 750K-iteration
-loop blocks the Node event loop for ~3-6 s per call on a 0.25 vCPU
-replica, so every request to either endpoint queues behind it.
-Intended to run as a background job, accidentally placed in the
-request hot path during the v2.1.0 merge."
-
-Example (crash regression):
-"src/outage-api/app.py line 126 (commit abc1234, build #44, GRID-2847
-enrichment work) calls `crew.upper().replace('_', ' ')`. `crew` is
-read from `outage['crew_status']`, which SCADA returns as `None` for
-any outage that hasn't been dispatched yet (~30% of records in
-production). Calling `.upper()` on None raises `AttributeError`,
-propagating as a 500. Unit tests passed because the test fixture
-only had outages with completed dispatch records."
-
-Example (config regression):
-"src/notification-svc/main.go line 35 (commit abc1234, build #44,
-INFRA-3291 TLS-1.3 migration) sets
-`gatewayURL = 'http://notification-gateway.internal:9443/api/v2/send'`.
-Port 9443 was the staging endpoint during the migration window and
-was never opened in prod (gateway listens on 8443). The /send handler
-dials this URL on every request and times out after ~5 s, returning
-503. Health check passes because it doesn't exercise the downstream
-call."
+<Plain-English mechanism: WHICH function/line/constant, WHAT it does
+or what input triggers it, WHY it produces the observed symptom, by
+HOW MUCH (latency added, % requests affected, exception rate, etc.).
+WHY tests/health checks didn't catch it, if known.>"
 
 ---
 
@@ -218,13 +195,10 @@ call."
 
 ## Resolution
 
-<What was done to fix the issue. Include exact commands run.>
-
-Example:
-"Removed the FORCE_ERROR environment variable from the container app:
-`az containerapp update -g rg-powergrid-dev -n ca-powergrid-outage --remove-env-vars FORCE_ERROR`
-New revision ca-powergrid-outage--def5678 was created and activated.
-Service returned to healthy state at 15:10 UTC."
+<What was done to fix the issue. Include the exact commands or API
+calls run, the new revision name produced (if any), and the UTC time
+the service returned to healthy state. Be specific — paste the
+command, don't describe it.>
 
 ---
 
@@ -243,30 +217,6 @@ Service returned to healthy state at 15:10 UTC."
 - [ ] <Gap 1 — e.g., no alert for FORCE_ERROR env var presence>
 - [ ] <Gap 2 — e.g., alert threshold too high, delayed detection>
 ```
-
----
-
-## Service-Specific Quick References
-
-### outage-api (ca-powergrid-outage)
-- **Common RCA:** `FORCE_ERROR=true` env var → 503 on all endpoints
-- **Fix:** `az containerapp update -g <rg> -n ca-powergrid-outage --remove-env-vars FORCE_ERROR`
-- **Runbook:** [outage-api-runbook.md](outage-api-runbook.md)
-
-### meter-api (ca-powergrid-meter)
-- **Common RCA:** `SIMULATE_OOM=true` → memory leak → OOM kill → restarts
-- **Fix:** `az containerapp update -g <rg> -n ca-powergrid-meter --remove-env-vars SIMULATE_OOM`
-- **Runbook:** [meter-api-runbook.md](meter-api-runbook.md)
-
-### grid-status-api (ca-powergrid-grid)
-- **Common RCA:** `SIMULATE_DELAY_MS=<value>` → artificial latency
-- **Fix:** `az containerapp update -g <rg> -n ca-powergrid-grid --remove-env-vars SIMULATE_DELAY_MS`
-- **Runbook:** [grid-status-runbook.md](grid-status-runbook.md)
-
-### notification-svc (ca-powergrid-notify)
-- **Common RCA:** Missing `REQUIRED_CONFIG` env var → crash loop
-- **Fix:** `az containerapp update -g <rg> -n ca-powergrid-notify --set-env-vars REQUIRED_CONFIG=enabled`
-- **Runbook:** [notification-svc-runbook.md](notification-svc-runbook.md)
 
 ---
 

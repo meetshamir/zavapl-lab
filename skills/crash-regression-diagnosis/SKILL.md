@@ -69,46 +69,35 @@ SPECIFIC change:
   a. Get the build commit SHA from the failing build via
      `GetPipelineRunHistory` on **PowerGrid-Build** → `sourceVersion`.
   b. Get the previous healthy build's SHA the same way.
-  c. Browse the diff for the failing service (e.g.
-     `src/outage-api/`) — focus on the file/line referenced in the
-     exception stack trace.
-  d. Quote the exact function and the offending lines (≤5 lines) in
-     the RCA. Example for a NoneType crash:
-     ```python
-     # src/outage-api/app.py:126  (commit abc1234)
-     enriched["crew_display"] = crew.upper().replace("_", " ")
-     # crew is read from outage["crew_status"] which is None for
-     # outages that haven't been dispatched yet
-     ```
+  c. Browse the diff for the failing service — focus on the file and
+     line referenced in the exception stack trace.
+  d. Quote the exact function and the offending lines (≤5 lines)
+     verbatim from the file, with file path and line numbers.
   e. State the mechanism: WHICH line throws, WHAT input causes it,
      WHY it slipped past tests, what the safe call should be.
 
 ## Output to caller
 
+Output schema (fill from your investigation — do NOT invent values):
+
 ```
 CRASH REGRESSION RCA
-  service:        outage-api
-  revision:       ca-powergrid-outage--0000044
-  deploy_time:    21:02 UTC
-  symptom:        500 on every GET /outages with active outages
-  exception:      AttributeError: 'NoneType' object has no attribute 'upper'
-                  (src/outage-api/app.py line 126, in enrich_outage)
-  count_5min:     127 (matches request count for /outages)
-  prior revision: 0 exceptions on this endpoint
+  service:        <container app name>
+  revision:       <new revision name>
+  deploy_time:    <UTC timestamp>
+  symptom:        <which endpoint(s), what status code, what input shape>
+  exception:      <Type: Message (file:line, in function)>
+  count_5min:     <count> (compare to request count for the endpoint)
+  prior revision: <exception count on previous revision; usually 0>
   code_cause:     |
-    src/outage-api/app.py line 126 (commit abc1234, build #44,
-    GRID-2847 enrichment work):
+    <file path>:<line>  <function name>
+    (commit <sha>, build #<n>):
 
-      enriched["crew_display"] = crew.upper().replace("_", " ")
+      <verbatim ≤5 lines of source from that location>
 
-    `crew` is read from `outage["crew_status"]`. SCADA returns
-    `crew_status: None` for any outage that hasn't been dispatched
-    yet (~30% of records in production). Calling `.upper()` on None
-    raises AttributeError, propagating as a 500 to the caller. Unit
-    tests passed because the test fixture only had outages with
-    completed dispatch records.
-  fix direction: guard the call — `(crew or "unassigned").upper()`,
-                 OR skip the enrichment when crew_status is None.
+    <Plain-English mechanism: WHICH line throws, WHAT input triggers
+     it, WHY it slipped past tests, the safe form of the call.>
+  fix direction: <one or more concrete options>
 ```
 
 Pass to `deployment-rollback` (immediate mitigation), then

@@ -74,9 +74,8 @@ stream filtered by `RevisionName == "{REVISION_NAME}"`. Look for:
 - GC pause warnings
 - "EVENTLOOP_BLOCKED", "long task" warnings (Node)
 - Thread pool saturation (Python)
-- Per-request log lines emitted from a new code path (e.g.
-  `Grid checksum: <hash>...`) that signal a freshly added expensive
-  computation in the handler.
+- Per-request log lines emitted from a new code path that signal a
+  freshly added expensive computation in the handler.
 
 ### 6. Check chaos / latency-injection endpoints
 Some services expose admin endpoints that inject server-side latency
@@ -95,9 +94,8 @@ the SPECIFIC change. Steps:
      `GetPipelineRunHistory` on **PowerGrid-Build** for buildId
      → `sourceVersion` field.
   b. Get the previous healthy build's commit SHA the same way.
-  c. Use `GetFileContents` / repo browse on saziz_microsoft/zavapl-lab
-     to inspect the diff for the failing service's source dir
-     (e.g. `src/grid-status-api/`). Pay attention to:
+  c. Use `GetFileContents` / repo browse to inspect the diff for the
+     failing service's source dir. Pay attention to:
        - new synchronous CPU-heavy loops over request payloads
          (e.g. nested loops, repeated hashing, large JSON walks)
        - new external HTTP/DB calls without timeouts
@@ -106,56 +104,38 @@ the SPECIFIC change. Steps:
          `fs.readFileSync` instead of `fs.promises.readFile`)
        - new middleware registered on every request
   d. Quote the exact function name and the offending lines (≤5 lines)
-     in the RCA. Example for an O(n) hashing hot path:
-     ```js
-     // src/grid-status-api/server.js  computeGridChecksum()
-     // (commit abc1234, build #44)
-     for (let i = 0; i < 750000; i++) {
-       checksum = crypto.createHash("sha256").update(checksum).digest("hex");
-     }
-     ```
+     of source — verbatim from the file, with file path and line
+     numbers — in the RCA.
   e. State the mechanism in plain English: WHICH function, WHAT it
-     does, WHY it slows requests, by HOW MUCH (e.g. "blocks the Node
-     event loop for ~3-6 s per call on 0.25 vCPU; called from
-     /regions and /capacity handlers, so every request waits").
+     does, WHY it slows requests, by HOW MUCH (latency added per
+     call, which endpoints are on the affected path, etc.).
 
 ## Output to caller
 Return a structured RCA. The `code_cause` field is REQUIRED and must
-quote actual source lines, not paraphrase.
+quote actual source lines (verbatim from the file), not paraphrase.
+
+Output schema (fill from your investigation — do NOT invent values):
 
 ```
 PERF REGRESSION RCA
-  service:        grid-status-api
-  revision:       ca-powergrid-grid--0000031
-  deploy_time:    21:02 UTC
-  scope:          /regions and /capacity (both call same fn)
-  p95 before:     115 ms (revision 0000030)
-  p95 after:      5200 ms (revision 0000031, +45x)
-  dependencies:   p95 < 50 ms (not the bottleneck)
-  chaos_endpoint: /chaos/status returns inactive
-  console_log:    "Grid checksum: 8f3a2b...  (per request)"
+  service:        <container app name>
+  revision:       <new revision name>
+  deploy_time:    <UTC timestamp>
+  scope:          <which endpoints are affected, from step 1>
+  p95 before:     <ms on previous revision>
+  p95 after:      <ms on new revision, with multiplier>
+  dependencies:   <p95 of downstream calls; whether they are the bottleneck>
+  chaos_endpoint: <result of /chaos/status probe, if applicable>
+  console_log:    <distinctive log line(s) seen on the new revision>
   code_cause:     |
-    src/grid-status-api/server.js — computeGridChecksum()
-    (commit abc1234, build #44, added per ticket SEC-2847):
+    <file path>:<line range>  <function name>
+    (commit <sha>, build #<n>):
 
-      function computeGridChecksum(data) {
-        let checksum = JSON.stringify(data);
-        for (let i = 0; i < 750000; i++) {
-          checksum = crypto.createHash("sha256").update(checksum).digest("hex");
-        }
-        return checksum;
-      }
+      <verbatim ≤5 lines of source from that location>
 
-    Called synchronously from the /regions and /capacity handlers on
-    every request. The 750K-iteration SHA-256 loop blocks the Node
-    event loop for ~3-6 s on a 0.25 vCPU replica, so EVERY request
-    (not just /regions) queues behind it. Intended to run as a
-    background job, accidentally placed in the request hot path
-    during the v2.1.0 merge.
-  fix direction: move the checksum to a background worker / queue;
-                 OR cache results by payload hash; OR reduce the
-                 iteration count to a meaningful security bound
-                 (1 round of SHA-256 is sufficient for integrity).
+    <Plain-English mechanism: WHICH function, WHAT it does, WHY it
+     slows requests, by HOW MUCH, on which endpoints.>
+  fix direction: <one or more concrete options>
 ```
 
 This RCA is the body for the `servicenow-incident-mgmt` work note and
