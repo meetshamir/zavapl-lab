@@ -16,9 +16,9 @@ description: |
 # Release on SRE Fix
 
 ## When to use
-Triggered by `BuildSucceeded` events on `PowerGrid-Build` (pipeline
-ID 4). The release-orchestrator agent loads this skill on every such
-event.
+Triggered by `BuildSucceeded` events on the **PowerGrid-Build**
+pipeline. The release-orchestrator agent loads this skill on every
+such event.
 
 ## Why a filter is necessary
 ADO release triggers do not natively filter by author or commit tag.
@@ -32,15 +32,19 @@ fixes that have already been validated by the agent's own diagnosis.
   agent prose, e.g. `sre-agent@yourtenant.onmicrosoft.com`. If your
   PR-creation flow always tags the resulting build with
   `sre-agent-fix`, the SP UPN check is optional.
-- **Build pipeline ID**: 4 (PowerGrid-Build) — this lab.
-- **Release pipeline ID**: 5 (PowerGrid-Release) — this lab.
+- **Build pipeline name**: `PowerGrid-Build`.
+- **Release pipeline name**: `PowerGrid-Release`.
+
+The built-in ADO MCP tools accept either pipeline names or numeric
+IDs; prefer names so this skill is portable across environments
+where the IDs differ.
 
 ## Decision flow
 
 ### 1. Read the build
-Use the built-in ADO MCP tool **`GetPipelineRunHistory`** on
-PowerGrid-Build (ID 4), filtered to the run that triggered the event.
-Capture:
+Use the built-in ADO MCP tool **`GetPipelineRunHistory`** on the
+**PowerGrid-Build** pipeline, filtered to the run that triggered the
+event. Capture:
 - `tags` (array of strings)
 - `requestedFor.uniqueName`
 - `result` (must be `succeeded`)
@@ -69,8 +73,8 @@ is_sre_agent_fix =
 ### 5. Trigger PowerGrid-Release
 Use the built-in ADO MCP run-pipeline tool (the same one the
 pipeline-failure-investigator agent uses for `TriggerBuildPipelineRun`
-— there is an equivalent for the release pipeline) to start
-PowerGrid-Release (pipeline ID 5) with variables:
+— there is an equivalent for the release pipeline) to start the
+**PowerGrid-Release** pipeline with variables:
 - `SOURCE_BUILD_ID = <build_id>`
 - `TRIGGERED_BY    = sre-agent`
 - `REASON          = auto-release of SRE-Agent fix for buildId=<id>`
