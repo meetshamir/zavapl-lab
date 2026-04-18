@@ -152,6 +152,19 @@ stages:
                   fi
                 done
 
+                # notification-svc has internal-only ingress — check ACA revision health
+                # instead of HTTP. Active revision must be Healthy + Running + Provisioned.
+                NOTIFY_STATE=$(az containerapp revision list \
+                  -n ca-$(workloadName)-notify -g $(resourceGroup) \
+                  --query "[?properties.active] | [0].{h:properties.healthState,r:properties.runningState,p:properties.provisioningState}" \
+                  -o tsv 2>/dev/null || echo "unknown")
+                if echo "$NOTIFY_STATE" | grep -qi "healthy.*running.*provisioned"; then
+                  echo "✅ notify: $NOTIFY_STATE (internal ingress)"
+                else
+                  echo "❌ notify: $NOTIFY_STATE (expected Healthy/Running/Provisioned)"
+                  FAILED=$((FAILED + 1))
+                fi
+
                 # Check App Service portal
                 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://app-$(workloadName)-portal.azurewebsites.net" --max-time 15 || echo "000")
                 if [ "$STATUS" = "200" ]; then
