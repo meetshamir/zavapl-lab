@@ -8,6 +8,19 @@
 trigger: none
 pr: none
 
+# Auto-trigger on successful PowerGrid-Build run.
+# This closes the SRE-Agent-driven CI/CD loop:
+#   Build success -> Release auto-runs -> Post-Deploy Validation trigger
+#   re-invokes deployment-validator with the new buildId.
+resources:
+  pipelines:
+    - pipeline: build
+      source: PowerGrid-Build
+      trigger:
+        branches:
+          include:
+            - main
+
 parameters:
   - name: buildId
     displayName: 'Build ID to deploy (image tag)'

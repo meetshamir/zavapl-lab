@@ -51,10 +51,15 @@ spec:
     10. If root cause is in code, create a fix PR using CreateFixPullRequest
 
     PHASE 5 — VISUALIZE & DOCUMENT
-    11. Upload a metrics chart to the ServiceNow incident using UploadChartToServiceNow.
-        Pass a KQL query that shows the incident timeline, for example:
-          requests | where timestamp > ago(30m) | summarize avg_latency=avg(duration), request_count=count() by bin(timestamp, 1m)
-        The tool runs the query, generates the chart, and uploads it to SNOW automatically.
+    11. Invoke skill: plot-incident-metrics
+        - Pass: service=<affected service>, inc_number=<INC_NUMBER>,
+          deploy_time=<last deploy ISO if applicable>,
+          incident_time=<detection time>
+        - The skill produces ONE consolidated chart (req rate, 5xx %, P95,
+          CPU%, Mem%, queue depth, replicas) with annotations and uploads
+          it to SNOW automatically.
+        - DO NOT generate any additional charts in this run. One chart per
+          incident is the rule.
     12. Include the SNOW incident link in work notes: https://dev268981.service-now.com/incident.do?sysparm_query=number=<INC_NUMBER>
 
     PHASE 6 — VALIDATE & CLOSE

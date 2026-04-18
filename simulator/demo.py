@@ -54,7 +54,15 @@ def run_az(args, timeout=30, retries=1, parse_json=False, quiet=False):
         # Split string command into list, but keep az.cmd as first arg
         import shlex
         args = args.split()
-    
+
+    # On Windows `az` is `az.cmd`; subprocess without shell=True cannot
+    # resolve PATHEXT, so we resolve the executable explicitly.
+    if args and args[0] == "az":
+        import shutil
+        resolved = shutil.which("az") or shutil.which("az.cmd")
+        if resolved:
+            args = [resolved] + list(args[1:])
+
     last_err = ""
     for attempt in range(retries + 1):
         try:
@@ -145,9 +153,15 @@ SN_URL  = os.environ.get("POWERGRID_SN_URL",  "https://dev268981.service-now.com
 SN_USER = os.environ.get("POWERGRID_SN_USER", "admin")
 SN_PASS = os.environ.get("POWERGRID_SN_PASS", "ME@6SkW2d*lc")
 
+# ── Infrastructure naming (override via env to retarget another deployment) ──
+RESOURCE_GROUP = os.environ.get("POWERGRID_RESOURCE_GROUP", f"rg-{WORKLOAD}")
+VM_NAME        = os.environ.get("POWERGRID_VM_NAME",        "vm-powergrid-arc")
+LAW_NAME       = os.environ.get("POWERGRID_LAW_NAME",       f"law-{WORKLOAD}")
+SRE_AGENT_NAME = os.environ.get("POWERGRID_SRE_AGENT_NAME", "sre-zavapower-ops")
+
 SRE_AGENT_THREAD_BASE = (
-    "https://sre.azure.com/agents/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254"
-    "/resourceGroups/rg-powergrid/providers/Microsoft.App/agents/sre-zavapower-ops/views/thread"
+    f"https://sre.azure.com/agents/subscriptions/{EXPECTED_SUBSCRIPTION}"
+    f"/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.App/agents/{SRE_AGENT_NAME}/views/thread"
 )
 
 console = Console()
@@ -194,13 +208,13 @@ def preflight_check(needs_vm=False, needs_ado=False, needs_services=None):
         console.print("[dim]  Checking VM...[/]", end="")
         try:
             r = subprocess.run(
-                'az vm show -g rg-powergrid -n vm-powergrid-arc --show-details --query powerState -o tsv',
+                f'az vm show -g {RESOURCE_GROUP} -n {VM_NAME} --show-details --query powerState -o tsv',
                 shell=True, capture_output=True, text=True, timeout=30)
             state = r.stdout.strip()
             if state != "VM running":
                 console.print(f" [yellow]{state}[/] — starting VM (this may take 1-2 min)...", end="")
                 subprocess.run(
-                    'az vm start --resource-group rg-powergrid --name vm-powergrid-arc -o none',
+                    f'az vm start --resource-group {RESOURCE_GROUP} --name {VM_NAME} -o none',
                     shell=True, timeout=300)
                 console.print("[green] ✓ VM started[/]")
             else:
@@ -294,6 +308,97 @@ def show_result(emoji, title, lines):
     console.input("[dim]  Press Enter to return to menu...[/]")
 
 # ── Azure DevOps Pipeline helpers ───────────────────────────
+def ado_pipeline_url(run_id):
+    """Clickable ADO portal URL for a build/release run."""
+    return f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_build/results?buildId={run_id}"
+
+def ado_pr_url(pr_id):
+    return f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_git/{ADO_PROJECT}/pullrequest/{pr_id}"
+
+def snow_inc_url(inc_number):
+    return f"{SN_URL}/incident.do?sysparm_query=number={inc_number}"
+
+def poll_latest_pipeline_run(pipeline_name, since_iso):
+    """Find the most recent run of a pipeline that started at/after since_iso.
+    Returns (run_id, status, result) or (None, None, None)."""
+    try:
+        cmd = (f'az pipelines runs list --pipeline-ids '
+               f'$(az pipelines show --name "{pipeline_name}" '
+               f'--project {ADO_PROJECT} --org https://dev.azure.com/{ADO_ORG} '
+               f'--query id -o tsv) '
+               f'--project {ADO_PROJECT} --org https://dev.azure.com/{ADO_ORG} '
+               f'--top 5 -o json')
+        # PowerShell-friendly: use single command form
+        cmd_ps = (
+            f'$pipId=(az pipelines show --name "{pipeline_name}" '
+            f'--project {ADO_PROJECT} --org https://dev.azure.com/{ADO_ORG} '
+            f'--query id -o tsv); '
+            f'az pipelines runs list --pipeline-ids $pipId '
+            f'--project {ADO_PROJECT} --org https://dev.azure.com/{ADO_ORG} '
+            f'--top 5 -o json'
+        )
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd_ps],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None, None, None
+        runs = json.loads(r.stdout)
+        for run in runs:
+            qt = run.get("queueTime", "") or run.get("createdDate", "")
+            if qt and qt >= since_iso:
+                return run.get("id"), run.get("status"), run.get("result", "")
+        return None, None, None
+    except Exception:
+        return None, None, None
+
+def poll_snow_incident_for(since_iso, contains=None):
+    """Find newest SNOW incident created at/after since_iso, optionally matching text.
+    Returns (number, sys_id) or (None, None)."""
+    try:
+        params = {
+            "sysparm_query": f"sys_created_on>={since_iso[:19].replace('T',' ')}^ORDERBYDESCsys_created_on",
+            "sysparm_limit": "10",
+            "sysparm_fields": "number,sys_id,short_description"
+        }
+        r = requests.get(
+            f"{SN_URL}/api/now/table/incident",
+            params=params,
+            auth=(SN_USER, SN_PASS),
+            headers={"Accept": "application/json"},
+            timeout=10
+        )
+        if r.status_code == 200:
+            for inc in r.json().get("result", []):
+                if contains is None or contains.lower() in inc.get("short_description", "").lower():
+                    return inc.get("number"), inc.get("sys_id")
+    except Exception:
+        pass
+    return None, None
+
+def poll_ado_pr(since_iso, source_branch_contains=None):
+    """Find newest active PR created at/after since_iso.
+    Returns (pr_id, source_branch, title) or (None, None, None)."""
+    try:
+        cmd_ps = (
+            f'az repos pr list --project {ADO_PROJECT} '
+            f'--org https://dev.azure.com/{ADO_ORG} '
+            f'--repository {ADO_PROJECT} --status active --top 10 -o json'
+        )
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd_ps],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None, None, None
+        prs = json.loads(r.stdout)
+        for pr in prs:
+            ct = pr.get("creationDate", "")
+            if ct and ct >= since_iso:
+                src = pr.get("sourceRefName", "")
+                if source_branch_contains and source_branch_contains.lower() not in src.lower():
+                    continue
+                return pr.get("pullRequestId"), src, pr.get("title", "")
+        return None, None, None
+    except Exception:
+        return None, None, None
+
 def run_ado_pipeline(name, params=None, branch="main"):
     """Trigger an ADO pipeline. Returns run ID or None."""
     cmd = (f'az pipelines run --name "{name}" --project {ADO_PROJECT} '
@@ -360,36 +465,64 @@ def poll_pipeline(run_id, label):
             time.sleep(0.25)
 
 def run_build_release(failure_scenario, services):
-    """Full build → release pipeline flow. Returns True on success."""
+    """Trigger PowerGrid-Build; release auto-chains via resources.pipelines.
+    Returns dict: {build_id, release_id, build_url, release_url} or None."""
+    sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     console.print("\n[bold cyan]  ▶ Triggering PowerGrid-Build...[/]")
     build_id = run_ado_pipeline("PowerGrid-Build", {
         "failure_scenario": failure_scenario, "services": services,
     })
     if not build_id:
-        console.input("[dim]  Press Enter...[/]"); return False
+        console.input("[dim]  Press Enter...[/]"); return None
 
-    console.print(f"[green]  ✓ Build #{build_id} triggered[/]\n")
+    build_url = ado_pipeline_url(build_id)
+    console.print(f"[green]  ✓ Build #{build_id} triggered[/]  "
+                  f"[cyan][link={build_url}]view in ADO[/link][/]\n")
     r = poll_pipeline(build_id, "PowerGrid-Build")
-    if r == "quit": return False
-    if r != "succeeded":
+    if r == "quit": return None
+    if r not in ("succeeded", "partiallySucceeded"):
         console.print(f"[red]  ✗ Build {r}[/]")
-        console.input("[dim]  Press Enter...[/]"); return False
+        console.input("[dim]  Press Enter...[/]"); return None
 
+    if r == "partiallySucceeded":
+        console.print("[yellow]  ⚠ Build partiallySucceeded "
+                      "(CSSC compliance warnings — non-blocking)[/]")
     console.print("[green]  ✓ Build succeeded![/]\n")
-    console.print("[bold cyan]  ▶ Triggering PowerGrid-Release...[/]")
-    rel_id = run_ado_pipeline("PowerGrid-Release")
-    if not rel_id:
-        console.input("[dim]  Press Enter...[/]"); return False
+    console.print("[bold cyan]  ▶ Waiting for PowerGrid-Release auto-trigger (build→release chaining)...[/]")
 
-    console.print(f"[green]  ✓ Release #{rel_id} triggered[/]\n")
-    r = poll_pipeline(rel_id, "PowerGrid-Release")
-    if r == "quit": return False
-    if r != "succeeded":
+    release_id = None
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        rid, status, _ = poll_latest_pipeline_run("PowerGrid-Release", sim_start)
+        if rid:
+            release_id = rid
+            break
+        time.sleep(5)
+
+    if not release_id:
+        console.print("[yellow]  ⚠ Release did not auto-trigger within 90s — falling back to manual trigger[/]")
+        release_id = run_ado_pipeline("PowerGrid-Release")
+        if not release_id:
+            console.input("[dim]  Press Enter...[/]"); return None
+
+    release_url = ado_pipeline_url(release_id)
+    console.print(f"[green]  ✓ Release #{release_id} started[/]  "
+                  f"[cyan][link={release_url}]view in ADO[/link][/]\n")
+    r = poll_pipeline(release_id, "PowerGrid-Release")
+    if r == "quit": return None
+    if r not in ("succeeded", "partiallySucceeded"):
         console.print(f"[red]  ✗ Release {r}[/]")
-        console.input("[dim]  Press Enter...[/]"); return False
+        console.input("[dim]  Press Enter...[/]"); return None
 
+    if r == "partiallySucceeded":
+        console.print("[yellow]  ⚠ Release partiallySucceeded "
+                      "(CSSC compliance warnings — non-blocking)[/]")
     console.print("[green]  ✓ Release succeeded![/]\n")
-    return True
+    return {
+        "build_id": build_id, "release_id": release_id,
+        "build_url": build_url, "release_url": release_url,
+        "sim_start": sim_start,
+    }
 
 # ── Alert Polling Helper ────────────────────────────────────
 def poll_alert(alert_name_contains, since_time, required_condition="Fired"):
@@ -401,7 +534,7 @@ def poll_alert(alert_name_contains, since_time, required_condition="Fired"):
     """
     try:
         result = subprocess.run(
-            'az rest --method GET --url "https://management.azure.com/subscriptions/e964602f-6afc-4cc7-ba6b-3a796008e254/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup=rg-powergrid" -o json',
+            f'az rest --method GET --url "https://management.azure.com/subscriptions/{EXPECTED_SUBSCRIPTION}/providers/Microsoft.AlertsManagement/alerts?api-version=2019-03-01&targetResourceGroup={RESOURCE_GROUP}" -o json',
             shell=True, timeout=60, capture_output=True, text=True
         )
         if result.returncode == 0:
@@ -581,6 +714,262 @@ def monitor_health(url, path, service_name, agent_name,
             time.sleep(2)
     return True
 
+# ── End-to-End Deployment Monitor (Phase A + Phase B) ──────────────────────
+def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
+                           ok_label="HEALTHY", bad_label="UNHEALTHY",
+                           alert_name=None, build_info=None,
+                           branch_hint=None):
+    """E2E deployment-validator watch:
+      Phase A (mitigation): detect → SNOW → rollback → recovered
+      Phase B (long-term):  fix PR → rebuild → re-deploy → re-validate
+    Renders a phase-strip with clickable links and a timeline.
+    Returns True when the loop closes (re-validation succeeds OR Phase A
+    recovers and we time out waiting for Phase B)."""
+    if healthy_fn is None:
+        healthy_fn = lambda code, ms: code == 200
+
+    sim_start = (build_info or {}).get("sim_start") or \
+                datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    timeline = EventTimeline()
+
+    # Pre-seed timeline with Phase 0/1 (pipelines)
+    if build_info:
+        timeline.add(
+            f"🔨 Build #{build_info['build_id']} succeeded — "
+            f"[link={build_info['build_url']}]view[/link]", "green")
+        timeline.add(
+            f"🚀 Release #{build_info['release_id']} deployed — "
+            f"[link={build_info['release_url']}]view[/link]", "green")
+        timeline.add("⚡ Post-Deploy Validation trigger fired → deployment-validator", "yellow bold")
+
+    # Phase tracking flags
+    phases = {
+        "build":      bool(build_info),
+        "release":    bool(build_info),
+        "deployed":   bool(build_info),
+        "detected":   False,
+        "snow":       False,
+        "rollback":   False,
+        "restored":   False,
+        "fix_pr":     False,
+        "rebuild":    False,
+        "redeploy":   False,
+        "revalidate": False,
+    }
+    snow_inc = None
+    snow_url = None
+    pr_id = None
+    pr_url = None
+    rebuild_id = None
+    rebuild_url = None
+    redeploy_id = None
+    redeploy_url = None
+    new_release_seen_at = None  # when the rebuild→release chain produces new release
+
+    checks = []
+    had_unhealthy = False
+    consecutive_ok = 0
+    alert_fired = False
+    agent_started = False
+    last_alert_poll = datetime.min
+    last_agent_poll = datetime.min
+    last_snow_poll  = datetime.min
+    last_pr_poll    = datetime.min
+    last_pipe_poll  = datetime.min
+    overall_done    = False
+    rebuild_search_start = None  # set when we know the agent created PR
+
+    def render_phase_strip():
+        # 9-step strip
+        steps = [
+            ("BUILD",      phases["build"]),
+            ("RELEASE",    phases["release"]),
+            ("DEPLOYED",   phases["deployed"]),
+            ("DETECTED",   phases["detected"]),
+            ("SNOW",       phases["snow"]),
+            ("ROLLBACK",   phases["rollback"]),
+            ("FIX PR",     phases["fix_pr"]),
+            ("REBUILD",    phases["rebuild"]),
+            ("REVALIDATE", phases["revalidate"]),
+        ]
+        bits = []
+        for name, done in steps:
+            mark = "[green]✓[/]" if done else "[dim]○[/]"
+            color = "green" if done else "dim"
+            bits.append(f"{mark} [{color}]{name}[/]")
+        return "  " + "  →  ".join(bits)
+
+    with Live(console=console, refresh_per_second=2) as live:
+        while not overall_done:
+            key = check_key()
+            if key in (b"q", b"Q"):
+                return False
+            now = datetime.now()
+
+            # ---- health probe ----
+            code, ms = health_check(url, path)
+            healthy = healthy_fn(code, ms)
+            checks.append({"ts": datetime.now().strftime("%H:%M:%S"),
+                           "code": code, "ms": ms, "ok": healthy})
+            if len(checks) > 20:
+                checks.pop(0)
+
+            if not healthy:
+                had_unhealthy = True
+                consecutive_ok = 0
+                if not phases["detected"]:
+                    phases["detected"] = True
+                    timeline.add(f"❌ Regression detected on {service_name} ({code}/{ms:.0f}ms)", "red bold")
+            else:
+                consecutive_ok += 1
+
+            # ---- alert detection ----
+            if alert_name and not alert_fired and (now - last_alert_poll).seconds >= 10:
+                last_alert_poll = now
+                fired, aid, _ = poll_alert(alert_name, sim_start)
+                if fired:
+                    alert_fired = True
+                    if aid:
+                        portal = f"https://portal.azure.com/#blade/Microsoft_Azure_Monitoring/AlertDetailsTemplateBlade/alertId/{aid.replace('/', '%2F')}"
+                        timeline.add(f"🚨 Azure Monitor alert FIRED — [link={portal}]view alert[/link]", "red bold")
+                    else:
+                        timeline.add("🚨 Azure Monitor alert FIRED", "red bold")
+
+            # ---- agent thread detection ----
+            if not agent_started and (now - last_agent_poll).seconds >= 10:
+                last_agent_poll = now
+                found, thread_id = poll_agent_thread(service_name, sim_start)
+                if found:
+                    agent_started = True
+                    if thread_id:
+                        thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
+                        timeline.add(f"🤖 deployment-validator picked up — [link={thread_url}]view thread[/link]", "yellow bold")
+                    else:
+                        timeline.add("🤖 deployment-validator picked up — investigating", "yellow bold")
+
+            # ---- SNOW INC detection ----
+            if not phases["snow"] and (now - last_snow_poll).seconds >= 15:
+                last_snow_poll = now
+                inc, _ = poll_snow_incident_for(sim_start, contains=service_name)
+                if inc:
+                    snow_inc = inc
+                    snow_url = snow_inc_url(inc)
+                    phases["snow"] = True
+                    timeline.add(f"📋 SNOW incident created: {inc} — [link={snow_url}]open ticket[/link]", "magenta bold")
+
+            # ---- ROLLBACK + RESTORED detection (consecutive_ok after unhealthy) ----
+            if had_unhealthy and consecutive_ok >= RECOVERY_THRESHOLD and not phases["rollback"]:
+                phases["rollback"] = True
+                phases["restored"] = True
+                timeline.add(f"♻️  Rollback executed — service restored", "green bold")
+                rebuild_search_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # ---- FIX PR detection (Phase B starts after rollback) ----
+            if phases["rollback"] and not phases["fix_pr"] and (now - last_pr_poll).seconds >= 20:
+                last_pr_poll = now
+                pid, src, title = poll_ado_pr(sim_start,
+                                              source_branch_contains=branch_hint or service_name)
+                if pid:
+                    pr_id = pid
+                    pr_url = ado_pr_url(pid)
+                    phases["fix_pr"] = True
+                    timeline.add(f"📝 Fix PR opened: !{pid} {title} — [link={pr_url}]review PR[/link]", "cyan bold")
+
+            # ---- REBUILD detection (new build run after rebuild_search_start) ----
+            if phases["fix_pr"] and not phases["rebuild"] and rebuild_search_start \
+                    and (now - last_pipe_poll).seconds >= 15:
+                last_pipe_poll = now
+                rid, status, _ = poll_latest_pipeline_run("PowerGrid-Build", rebuild_search_start)
+                if rid and (build_info is None or rid != build_info.get("build_id")):
+                    rebuild_id = rid
+                    rebuild_url = ado_pipeline_url(rid)
+                    phases["rebuild"] = True
+                    timeline.add(f"🔨 Rebuild #{rid} triggered — [link={rebuild_url}]view[/link]", "yellow")
+
+            # ---- REDEPLOY detection (new release after rebuild) ----
+            if phases["rebuild"] and not phases["redeploy"] and (now - last_pipe_poll).seconds >= 15:
+                rid, status, result = poll_latest_pipeline_run("PowerGrid-Release", rebuild_search_start)
+                if rid and (build_info is None or rid != build_info.get("release_id")):
+                    redeploy_id = rid
+                    redeploy_url = ado_pipeline_url(rid)
+                    if status == "completed" and result == "succeeded":
+                        phases["redeploy"] = True
+                        new_release_seen_at = datetime.now()
+                        timeline.add(f"🚀 Auto-redeployed via release #{rid} — [link={redeploy_url}]view[/link]", "green")
+
+            # ---- REVALIDATE: after redeploy, watch for sustained healthy ----
+            if phases["redeploy"] and not phases["revalidate"]:
+                # Fresh consecutive-ok count after redeploy time
+                ok_after = sum(1 for c in checks
+                               if c["ok"] and datetime.strptime(c["ts"], "%H:%M:%S").time()
+                               >= new_release_seen_at.time())
+                if ok_after >= RECOVERY_THRESHOLD:
+                    phases["revalidate"] = True
+                    timeline.add(f"🎉 Re-validation passed — fix verified by deployment-validator", "green bold")
+                    overall_done = True
+
+            # If Phase B never starts within 8 min after rollback, declare done
+            if phases["restored"] and not phases["fix_pr"] and rebuild_search_start:
+                elapsed = (datetime.utcnow() - datetime.strptime(
+                    rebuild_search_start, "%Y-%m-%dT%H:%M:%SZ")).total_seconds()
+                if elapsed > 480:
+                    timeline.add("⏱  Phase B (PR+rebuild) did not occur within 8 min — Phase A complete", "dim")
+                    overall_done = True
+
+            # ---- build display ----
+            grid = Table.grid(padding=1)
+            grid.add_column()
+
+            grid.add_row(Panel(
+                f"[bold cyan]🛠  END-TO-END DEPLOYMENT WATCH[/]  —  {service_name}\n"
+                "[dim]q = return to menu[/]",
+                border_style="cyan", width=92))
+
+            grid.add_row(Text.from_markup(render_phase_strip()))
+
+            color = "green" if healthy else "red"
+            icon = "✅" if healthy else "❌"
+            label = ok_label if healthy else bad_label
+            grid.add_row(Text.from_markup(
+                f"  {icon} [{color} bold]{service_name}: {label}[/] "
+                f"({code} / {ms:.0f}ms)"))
+
+            ht = Table(box=box.ROUNDED, border_style="dim", width=64)
+            ht.add_column("Time", style="dim", width=9)
+            ht.add_column("Status", width=7, justify="center")
+            ht.add_column("Latency", width=10, justify="right")
+            ht.add_column("Result", width=10, justify="center")
+            for c in checks[-8:]:
+                sc = "green" if c["ok"] else "red"
+                ht.add_row(c["ts"], f"[{sc}]{c['code']}[/]", f"{c['ms']:.0f}ms",
+                           f"[green]{ok_label}[/]" if c["ok"] else f"[red]{bad_label}[/]")
+            grid.add_row(ht)
+
+            # Artifacts panel
+            artifacts = []
+            if build_info:
+                artifacts.append(f"  🔨 [link={build_info['build_url']}]Build #{build_info['build_id']}[/]")
+                artifacts.append(f"  🚀 [link={build_info['release_url']}]Release #{build_info['release_id']}[/]")
+            if snow_inc:
+                artifacts.append(f"  📋 [link={snow_url}]SNOW {snow_inc}[/]")
+            if pr_id:
+                artifacts.append(f"  📝 [link={pr_url}]PR !{pr_id}[/]")
+            if rebuild_id:
+                artifacts.append(f"  🔨 [link={rebuild_url}]Rebuild #{rebuild_id}[/]")
+            if redeploy_id:
+                artifacts.append(f"  🚀 [link={redeploy_url}]Re-deploy #{redeploy_id}[/]")
+            if artifacts:
+                grid.add_row(Panel(
+                    "\n".join(artifacts),
+                    title="[dim]Artifacts[/]",
+                    border_style="dim", width=92))
+
+            grid.add_row(timeline.render())
+            live.update(grid)
+            time.sleep(2)
+
+    return True
+
 # ═══════════════════════════════════════════════════════════
 #  SCENARIO 1 — Bad Deployment: App Crash (SCADA Bug)
 # ═══════════════════════════════════════════════════════════
@@ -606,23 +995,31 @@ def scenario_crash():
     if not preflight_check(needs_ado=True, needs_services=[("outage-api", OUTAGE_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
-    if not run_build_release("crash", "outage-api"):
+    build_info = run_build_release("crash", "outage-api")
+    if not build_info:
         return
     console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
     time.sleep(1)
 
-    if monitor_health(OUTAGE_API_URL, "/outages", "outage-api",
-                      "deployment-validator",
-                      alert_name="http-5xx", trigger_type="release"):
-        show_result("🎉", "SERVICE RESTORED!", [
-            "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
-            "- Found AttributeError in _enrich_outage() line 116",
-            "- Rolled back to previous revision",
-            "- Created fix PR in ADO",
+    if monitor_deployment_e2e(OUTAGE_API_URL, "/outages", "outage-api",
+                              alert_name="http-5xx",
+                              build_info=build_info,
+                              branch_hint="outage"):
+        show_result("🎉", "DEPLOYMENT VALIDATED — FULL LOOP CLOSED!", [
+            "deployment-validator end-to-end:",
+            "  Phase A (immediate mitigation):",
+            "    - Detected /outages 500s after deploy",
+            "    - Created SNOW incident with buildId tag",
+            "    - Plotted ONE consolidated metrics chart",
+            "    - Rolled back to previous healthy revision",
+            "  Phase B (long-term fix):",
+            "    - Diagnosed AttributeError in _enrich_outage()",
+            "    - Opened fix PR in ADO repo",
+            "    - Triggered PowerGrid-Build with fix",
+            "    - Build succeeded → release auto-chained",
+            "    - Re-validated new deployment → healthy",
             "",
-            "Check sre.azure.com for the full investigation thread.",
-            "Check dev268981.service-now.com for the SNOW ticket.",
+            "Click any link in the timeline above to drill into the artifact.",
         ])
 
 # ═══════════════════════════════════════════════════════════
@@ -648,25 +1045,25 @@ def scenario_perf():
     if not preflight_check(needs_ado=True, needs_services=[("grid-status-api", GRID_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
-    if not run_build_release("perf", "grid-status-api"):
+    build_info = run_build_release("perf", "grid-status-api")
+    if not build_info:
         return
     console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
     time.sleep(1)
 
-    if monitor_health(GRID_API_URL, "/regions", "grid-status-api",
-                      "deployment-validator",
-                      healthy_fn=lambda c, ms: c == 200 and ms < 1000,
-                      ok_label="FAST", bad_label="SLOW",
-                      alert_name="high-latency", trigger_type="release"):
-        show_result("🎉", "PERFORMANCE RESTORED!", [
-            "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
-            "- Found O(n²) checksum loop in validate_telemetry()",
-            "- Response time: 5200ms → 85ms after rollback",
-            "- Rolled back to previous revision",
-            "- Created fix PR with batch checksum approach",
+    if monitor_deployment_e2e(GRID_API_URL, "/regions", "grid-status-api",
+                              healthy_fn=lambda c, ms: c == 200 and ms < 1000,
+                              ok_label="FAST", bad_label="SLOW",
+                              alert_name="high-latency",
+                              build_info=build_info,
+                              branch_hint="grid"):
+        show_result("🎉", "PERFORMANCE RESTORED — FULL LOOP CLOSED!", [
+            "deployment-validator end-to-end:",
+            "  Phase A: detected P95 > 1s → SNOW + chart → rollback",
+            "  Phase B: diagnosed O(n²) checksum → PR → rebuild → re-validated",
+            "Response time: 5200ms → 85ms after rollback",
             "",
-            "Check sre.azure.com for the full investigation thread.",
+            "Click any link in the timeline above to drill into the artifact.",
         ])
 
 # ═══════════════════════════════════════════════════════════
@@ -692,23 +1089,22 @@ def scenario_config():
     if not preflight_check(needs_ado=True):
         console.input("[dim]  Press Enter...[/]"); return
 
-    if not run_build_release("config", "notification-svc"):
+    build_info = run_build_release("config", "notification-svc")
+    if not build_info:
         return
     console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
     time.sleep(1)
 
-    if monitor_health(NOTIFY_URL, "/send", "notification-svc",
-                      "deployment-validator",
-                      alert_name="http-5xx", trigger_type="release"):
-        show_result("🎉", "SERVICE RESTORED!", [
-            "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
-            "- Found connection timeout to gateway:8443",
-            "- Identified GATEWAY_PORT mismatch (8443 vs 9443)",
-            "- Rolled back to previous revision",
-            "- Created fix PR updating GATEWAY_PORT=9443",
+    if monitor_deployment_e2e(NOTIFY_URL, "/send", "notification-svc",
+                              alert_name="http-5xx",
+                              build_info=build_info,
+                              branch_hint="notif"):
+        show_result("🎉", "CONFIG FIXED — FULL LOOP CLOSED!", [
+            "deployment-validator end-to-end:",
+            "  Phase A: detected /send timeouts → SNOW + chart → rollback",
+            "  Phase B: diagnosed GATEWAY_PORT mismatch → PR → rebuild → re-validated",
             "",
-            "Check sre.azure.com for the full investigation thread.",
+            "Click any link in the timeline above to drill into the artifact.",
         ])
 
 # ═══════════════════════════════════════════════════════════
@@ -762,8 +1158,8 @@ def scenario_disk():
             "else { Write-Output \\\"FILL_INSUFFICIENT:${afterPct}pct:${afterFreeGB}GB\\\" }"
         )
         result = subprocess.run(
-            f'az vm run-command invoke --resource-group rg-powergrid '
-            f'--name vm-powergrid-arc --command-id RunPowerShellScript '
+            f'az vm run-command invoke --resource-group {RESOURCE_GROUP} '
+            f'--name {VM_NAME} --command-id RunPowerShellScript '
             f'--scripts "{ps_script}" '
             f'--query "value[0].message" -o tsv',
             shell=True, timeout=180, capture_output=True, text=True
@@ -858,7 +1254,7 @@ def scenario_disk():
             if len(checks) == 0 or (len(checks) > 0 and (datetime.now() - checks[-1].get("_poll_time", datetime.min)).seconds >= 15):
                 try:
                     wsid = subprocess.run(
-                        'az monitor log-analytics workspace show -g rg-powergrid -n law-powergrid --query customerId -o tsv',
+                        f'az monitor log-analytics workspace show -g {RESOURCE_GROUP} -n {LAW_NAME} --query customerId -o tsv',
                         shell=True, timeout=10, capture_output=True, text=True
                     ).stdout.strip()
                     result = subprocess.run(
@@ -892,7 +1288,7 @@ def scenario_disk():
             grid.add_column()
 
             grid.add_row(Panel(
-                "[bold cyan]💾 DISK PRESSURE MONITOR[/]  —  vm-powergrid-arc\n"
+                f"[bold cyan]💾 DISK PRESSURE MONITOR[/]  —  {VM_NAME}\n"
                 "[dim]q = return to menu[/]",
                 border_style="cyan", width=68,
             ))
@@ -959,7 +1355,7 @@ def scenario_disk():
     show_result("🎉", "DISK PRESSURE RESOLVED!", [
         "SRE Agent (vm-ops-agent):",
         "- Detected disk at 94% via Azure Monitor alert",
-        "- Ran PowerShell diagnostics on vm-powergrid-arc",
+        f"- Ran PowerShell diagnostics on {VM_NAME}",
         "- Cleaned C:\\data\\grid-logs (recovered old logs and core dumps)",
         "- Pruned old SCADA backups from C:\\data\\scada-backups",
         "- Removed stale meter data from C:\\data\\meter-data",
@@ -1449,6 +1845,61 @@ def scenario_servicenow():
 # ═══════════════════════════════════════════════════════════
 #  SCENARIO 8 — Reset All (Healthy Baseline)
 # ═══════════════════════════════════════════════════════════
+def _wake_servicenow(timeout=30):
+    """Probe ServiceNow PDI. Returns (ok, detail)."""
+    try:
+        r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
+                         auth=(SN_USER, SN_PASS),
+                         headers={"Accept": "application/json"}, timeout=timeout)
+        if r.status_code == 200:
+            return True, "awake"
+        return False, f"status {r.status_code}"
+    except requests.exceptions.Timeout:
+        return False, "timeout (hibernating)"
+    except Exception as e:
+        return False, str(e)[:60]
+
+
+def _wait_for_http_healthy(url, name, timeout_s=90, interval_s=5):
+    """Poll {url}/health until 200 or timeout. Returns (ok, status_code, latency_ms, elapsed_s)."""
+    start = time.time()
+    code, ms = 0, 0
+    while (time.time() - start) < timeout_s:
+        code, ms = health_check(url)
+        if code == 200:
+            return True, code, ms, time.time() - start
+        time.sleep(interval_s)
+    return False, code, ms, time.time() - start
+
+
+def _wait_for_aca_healthy(app_name, rg, timeout_s=90, interval_s=5):
+    """Poll `az containerapp revision list` until the active revision is
+    Healthy+Running or timeout. Used for internal-ingress apps that can't be
+    probed via HTTP from outside the ACA environment.
+    Returns (ok, detail, elapsed_s).
+    """
+    start = time.time()
+    last = "unknown"
+    while (time.time() - start) < timeout_s:
+        ok, out, err = run_az(
+            ["az", "containerapp", "revision", "list", "-n", app_name, "-g", rg,
+             "--query", "[?properties.active].{h:properties.healthState,r:properties.runningState,p:properties.provisioningState} | [0]",
+             "-o", "json"],
+            timeout=20, parse_json=True,
+        )
+        if ok and isinstance(out, dict):
+            h = (out.get("h") or "").lower()
+            r = (out.get("r") or "").lower()
+            p = (out.get("p") or "").lower()
+            last = f"{out.get('h')}/{out.get('r')}/{out.get('p')}"
+            if h == "healthy" and r == "running" and p == "provisioned":
+                return True, last, time.time() - start
+        elif not ok:
+            last = (err or "az error")[:60]
+        time.sleep(interval_s)
+    return False, last, time.time() - start
+
+
 def scenario_reset():
     console.clear()
     console.print(Panel(
@@ -1461,108 +1912,210 @@ def scenario_reset():
         "  - Clean disk pressure files on VM\n"
         "  - Start VM if stopped\n"
         "  - Restore App Service port configuration\n"
-        "  - Validate all service health endpoints\n",
+        "  - Validate all service health endpoints + ServiceNow\n",
         title="[bold]🧹 RESET ALL — HEALTHY BASELINE[/]",
         border_style="cyan", width=68,
     ))
     console.input("[dim]  Press Enter to proceed...[/]")
 
+    rg = RESOURCE_GROUP
     console.print("\n[bold cyan]  ▶ Resetting all services...[/]")
 
-    # Wake up ServiceNow PDI (dev instances sleep after inactivity)
+    # ── Wake up ServiceNow PDI (dev instances sleep after inactivity) ──
     console.print("[dim]  Waking up ServiceNow PDI...[/]", end="")
-    try:
-        r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
-                         auth=(SN_USER, SN_PASS), headers={"Accept": "application/json"}, timeout=30)
-        if r.status_code == 200:
-            console.print("[green] ✓ awake[/]")
-        else:
-            console.print(f"[yellow] ⚠ status {r.status_code} (may need manual wake)[/]")
-    except Exception:
-        console.print("[yellow] ⚠ unreachable (wake it at developer.servicenow.com)[/]")
+    sn_ok, sn_detail = _wake_servicenow(timeout=30)
+    if sn_ok:
+        console.print("[green] ✓ awake[/]")
+    else:
+        console.print(f"[yellow] ⚠ {sn_detail} (wake at developer.servicenow.com)[/]")
 
-    # Reset Container App env vars directly (no bash needed)
+    # ── Reset Container App env vars and scale settings ──
+    # Each entry: (label, az args list)
     reset_cmds = [
-        f'az containerapp update -n ca-{WORKLOAD}-outage -g rg-{WORKLOAD} --remove-env-vars FORCE_ERROR --output none 2>nul',
-        f'az containerapp update -n ca-{WORKLOAD}-meter -g rg-{WORKLOAD} --remove-env-vars SIMULATE_OOM --output none 2>nul',
-        f'az containerapp update -n ca-{WORKLOAD}-grid -g rg-{WORKLOAD} --remove-env-vars SIMULATE_DELAY_MS --min-replicas 1 --max-replicas 5 --cpu 0.25 --memory 0.5Gi --output none 2>nul',
-        f'az containerapp update -n ca-{WORKLOAD}-notify -g rg-{WORKLOAD} --set-env-vars REQUIRED_CONFIG=enabled --output none 2>nul',
-        f'az webapp config appsettings set --name app-{WORKLOAD}-portal --resource-group rg-{WORKLOAD} --settings WEBSITES_PORT=8080 --output none 2>nul',
+        ("outage-api env vars", [
+            "az", "containerapp", "update", "-n", f"ca-{WORKLOAD}-outage", "-g", rg,
+            "--remove-env-vars", "FORCE_ERROR", "--output", "none"]),
+        ("meter-api env vars", [
+            "az", "containerapp", "update", "-n", f"ca-{WORKLOAD}-meter", "-g", rg,
+            "--remove-env-vars", "SIMULATE_OOM", "--output", "none"]),
+        ("grid-status-api env + scale", [
+            "az", "containerapp", "update", "-n", f"ca-{WORKLOAD}-grid", "-g", rg,
+            "--remove-env-vars", "SIMULATE_DELAY_MS",
+            "--min-replicas", "1", "--max-replicas", "5",
+            "--cpu", "0.25", "--memory", "0.5Gi", "--output", "none"]),
+        ("notification-svc REQUIRED_CONFIG", [
+            "az", "containerapp", "update", "-n", f"ca-{WORKLOAD}-notify", "-g", rg,
+            "--set-env-vars", "REQUIRED_CONFIG=enabled", "--output", "none"]),
+        ("portal WEBSITES_PORT", [
+            "az", "webapp", "config", "appsettings", "set",
+            "--name", f"app-{WORKLOAD}-portal", "--resource-group", rg,
+            "--settings", "WEBSITES_PORT=8080", "--output", "none"]),
     ]
-    for cmd in reset_cmds:
-        try:
-            subprocess.run(cmd, shell=True, timeout=60)
-        except Exception:
-            pass
-
-    # Disable chaos mode on grid-status-api (in case scenario 5 left it on)
-    console.print("[dim]  Disabling chaos mode on grid-status-api...[/]")
-    try:
-        requests.delete(f"{GRID_API_URL}/chaos/latency", timeout=5)
-    except Exception:
-        pass
-
-    # Ensure VM is running and clean disk pressure files
-    console.print("[dim]  Checking VM status...[/]")
-    try:
-        vm_state = subprocess.run(
-            'az vm get-instance-view --name vm-powergrid-arc --resource-group rg-powergrid '
-            '--query "instanceView.statuses[1].displayStatus" -o tsv',
-            shell=True, capture_output=True, text=True, timeout=30
-        ).stdout.strip()
-        if "running" not in vm_state.lower():
-            console.print("[dim]  Starting VM...[/]")
-            subprocess.run(
-                'az vm start --name vm-powergrid-arc --resource-group rg-powergrid --no-wait',
-                shell=True, timeout=30, capture_output=True
-            )
-            time.sleep(30)  # wait for VM to boot
-        console.print("[dim]  Cleaning disk pressure files on VM...[/]")
-        subprocess.run(
-            'az vm run-command invoke --resource-group rg-powergrid --name vm-powergrid-arc '
-            '--command-id RunPowerShellScript --scripts '
-            '"Remove-Item C:\\data\\scada-backups\\*.bak -Force -ErrorAction SilentlyContinue; '
-            'Remove-Item C:\\data\\grid-logs\\*.log -Force -ErrorAction SilentlyContinue; '
-            'Remove-Item C:\\data\\grid-logs\\*.tmp -Force -ErrorAction SilentlyContinue; '
-            'Remove-Item C:\\data\\meter-data\\*.dat -Force -ErrorAction SilentlyContinue; '
-            'Write-Output CLEANED" --output none 2>nul',
-            shell=True, timeout=120
-        )
-        console.print("[green]  ✓ VM disk cleaned[/]")
-    except Exception:
-        console.print("[yellow]  ⚠ VM cleanup skipped (VM may be stopped)[/]")
-    console.print("[green]  ✓ All services reset[/]\n")
-
-    console.print("[bold cyan]  ▶ Validating services...[/]\n")
-    services = [
-        ("outage-api",       OUTAGE_API_URL),
-        ("grid-status-api",  GRID_API_URL),
-        ("notification-svc", NOTIFY_URL),
-        ("portal",           PORTAL_URL),
-    ]
-    all_ok = True
-    for name, url in services:
-        code, ms = health_check(url)
-        if code == 200:
-            console.print(f"  [green]✅ {name}: {code} ({ms:.0f}ms)[/]")
+    reset_failures = []
+    for label, args in reset_cmds:
+        ok, _out, err = run_az(args, timeout=90, retries=1)
+        if ok:
+            console.print(f"[green]  ✓ {label}[/]")
         else:
-            console.print(f"  [red]❌ {name}: {code or 'unreachable'}[/]")
+            reset_failures.append((label, err))
+            console.print(f"[yellow]  ⚠ {label}: {err[:80]}[/]")
+
+    # ── Restart portal App Service so new WEBSITES_PORT takes effect ──
+    ok, _out, err = run_az(
+        ["az", "webapp", "restart", "--name", f"app-{WORKLOAD}-portal",
+         "--resource-group", rg, "--output", "none"],
+        timeout=60, retries=1,
+    )
+    if ok:
+        console.print("[green]  ✓ portal restarted[/]")
+    else:
+        console.print(f"[yellow]  ⚠ portal restart: {err[:80]}[/]")
+
+    # ── Disable chaos mode on grid-status-api (in case scenario 5 left it on) ──
+    console.print("[dim]  Disabling chaos mode on grid-status-api...[/]", end="")
+    try:
+        r = requests.delete(f"{GRID_API_URL}/chaos/latency", timeout=5)
+        if r.status_code in (200, 204):
+            console.print("[green] ✓ disabled[/]")
+        else:
+            console.print(f"[yellow] ⚠ status {r.status_code}[/]")
+    except Exception as e:
+        console.print(f"[yellow] ⚠ {str(e)[:60]}[/]")
+
+    # ── Ensure VM is running and clean disk pressure files ──
+    console.print("[dim]  Checking VM status...[/]", end="")
+    ok, vm_state, err = run_az(
+        ["az", "vm", "get-instance-view", "--name", VM_NAME, "--resource-group", rg,
+         "--query", "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]",
+         "-o", "tsv"],
+        timeout=30,
+    )
+    if not ok:
+        console.print(f"[yellow] ⚠ VM lookup skipped: {err[:60]}[/]")
+    else:
+        console.print(f" [dim]{vm_state or 'unknown'}[/]")
+        if "running" not in (vm_state or "").lower():
+            console.print("[dim]  Starting VM (may take 1-2 min)...[/]", end="")
+            ok_start, _out, err_start = run_az(
+                ["az", "vm", "start", "--name", VM_NAME, "--resource-group", rg, "--output", "none"],
+                timeout=300,
+            )
+            if ok_start:
+                console.print("[green] ✓ started[/]")
+            else:
+                console.print(f"[yellow] ⚠ {err_start[:60]}[/]")
+        console.print("[dim]  Cleaning disk pressure files on VM...[/]", end="")
+        ok_clean, _out, err_clean = run_az(
+            ["az", "vm", "run-command", "invoke",
+             "--resource-group", rg, "--name", VM_NAME,
+             "--command-id", "RunPowerShellScript",
+             "--scripts",
+             "Remove-Item C:\\data\\scada-backups\\*.bak -Force -ErrorAction SilentlyContinue;"
+             "Remove-Item C:\\data\\grid-logs\\*.log -Force -ErrorAction SilentlyContinue;"
+             "Remove-Item C:\\data\\grid-logs\\*.tmp -Force -ErrorAction SilentlyContinue;"
+             "Remove-Item C:\\data\\meter-data\\*.dat -Force -ErrorAction SilentlyContinue;"
+             "Write-Output CLEANED",
+             "--output", "none"],
+            timeout=180,
+        )
+        if ok_clean:
+            console.print("[green] ✓ cleaned[/]")
+        else:
+            console.print(f"[yellow] ⚠ {err_clean[:60]}[/]")
+
+    console.print("[green]\n  ✓ Reset actions complete[/]\n")
+
+    # ── Validate services (with retry for in-flight rollouts) ──
+    console.print("[bold cyan]  ▶ Validating services (waiting for rollouts, up to 90s each)...[/]\n")
+    all_ok = True
+
+    # External HTTP services — poll /health with backoff
+    http_services = [
+        ("outage-api",      OUTAGE_API_URL),
+        ("grid-status-api", GRID_API_URL),
+        ("portal",          PORTAL_URL),
+    ]
+    for name, url in http_services:
+        ok, code, ms, elapsed = _wait_for_http_healthy(url, name, timeout_s=90, interval_s=5)
+        if ok:
+            console.print(f"  [green]✅ {name}: {code} ({ms:.0f}ms, ready in {elapsed:.0f}s)[/]")
+        else:
+            console.print(f"  [red]❌ {name}: {code or 'unreachable'} after {elapsed:.0f}s[/]")
             all_ok = False
 
-    console.print()
-    if all_ok:
-        console.print("[green bold]  ✅ All services healthy![/]\n")
+    # Internal-ingress container apps — validate via ACA revision state
+    aca_internal_services = [
+        ("notification-svc", f"ca-{WORKLOAD}-notify"),
+    ]
+    for name, app in aca_internal_services:
+        ok, detail, elapsed = _wait_for_aca_healthy(app, rg, timeout_s=90, interval_s=5)
+        if ok:
+            console.print(f"  [green]✅ {name}: {detail} (ready in {elapsed:.0f}s)[/]")
+        else:
+            console.print(f"  [red]❌ {name}: {detail} after {elapsed:.0f}s[/]")
+            all_ok = False
+
+    # ServiceNow — re-verify API is responding
+    sn_ok2, sn_detail2 = _wake_servicenow(timeout=15)
+    if sn_ok2:
+        console.print(f"  [green]✅ ServiceNow: {sn_detail2}[/]")
     else:
-        console.print("[yellow]  ⚠ Some services may still be recovering.[/]\n")
+        console.print(f"  [yellow]⚠  ServiceNow: {sn_detail2}[/]")
+        # SNOW hibernation is common and not strictly a failure of the lab
+        # services, so we warn but don't flip all_ok.
+
+    console.print()
+    if all_ok and not reset_failures:
+        console.print("[green bold]  ✅ All services healthy![/]\n")
+    elif all_ok:
+        console.print("[yellow]  ⚠ Services healthy, but some reset commands reported issues:[/]")
+        for label, err in reset_failures:
+            console.print(f"    [dim]- {label}: {err[:120]}[/]")
+        console.print()
+    else:
+        console.print("[yellow]  ⚠ Some services did not reach a healthy state in time.[/]")
+        console.print("[dim]     If a rollout is still in progress, wait ~1 min and re-run Reset.[/]\n")
 
     console.input("[dim]  Press Enter to return to menu...[/]")
 
 # ── System Status Panel ─────────────────────────────────────
+_status_cache = {}  # {key: (timestamp, value)}
+_STATUS_CACHE_TTL = 30  # seconds — keeps menu rendering snappy
+
+def _cached(key, ttl, fn):
+    """Memoize fn() result for `ttl` seconds under `key`."""
+    now = time.time()
+    entry = _status_cache.get(key)
+    if entry and (now - entry[0]) < ttl:
+        return entry[1]
+    val = fn()
+    _status_cache[key] = (now, val)
+    return val
+
+
+def _notify_aca_status():
+    """Check notification-svc ACA revision health (it's internal-only,
+    so HTTP probe from outside is impossible). Returns short status string.
+    """
+    ok, out, _err = run_az(
+        ["az", "containerapp", "revision", "list",
+         "-n", f"ca-{WORKLOAD}-notify", "-g", f"rg-{WORKLOAD}",
+         "--query", "[?properties.active].{h:properties.healthState,r:properties.runningState} | [0]",
+         "-o", "json"],
+        timeout=10, parse_json=True,
+    )
+    if not ok or not isinstance(out, dict):
+        return None  # az unavailable / not logged in
+    h = (out.get("h") or "").lower()
+    r = (out.get("r") or "").lower()
+    return ("up" if h == "healthy" and r == "running" else
+            f"degraded ({out.get('h')}/{out.get('r')})")
+
+
 def _system_status_panel():
     services = [
         ("Outage API",   OUTAGE_API_URL),
         ("Grid Status",  GRID_API_URL),
-        ("Notification", NOTIFY_URL),
         ("Portal",       PORTAL_URL),
     ]
     lines = []
@@ -1572,10 +2125,17 @@ def _system_status_panel():
             lines.append(f"  {name:<16} [green]● UP[/]   {ms:.0f}ms")
         elif code == 0:
             lines.append(f"  {name:<16} [dim]● N/A[/]")
-        elif code == 404 and "notify" in url.lower():
-            lines.append(f"  {name:<16} [yellow]● DOWN[/]  [dim](config scenario)[/]")
         else:
             lines.append(f"  {name:<16} [red]● {code}[/]  {ms:.0f}ms")
+
+    # Notification — internal ingress, validate via ACA revision state
+    notify_status = _cached("notify_aca", _STATUS_CACHE_TTL, _notify_aca_status)
+    if notify_status is None:
+        lines.append(f"  {'Notification':<16} [dim]● N/A[/]")
+    elif notify_status == "up":
+        lines.append(f"  {'Notification':<16} [green]● UP[/]   [dim](internal)[/]")
+    else:
+        lines.append(f"  {'Notification':<16} [red]● {notify_status}[/]")
 
     # ServiceNow PDI status
     try:
