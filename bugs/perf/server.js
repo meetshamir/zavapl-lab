@@ -3,16 +3,16 @@
 // A developer added SHA-256 checksum validation to ensure grid telemetry
 // data integrity before returning results. The implementation computes
 // checksums synchronously on the main thread using crypto.createHash()
-// in a tight loop. This blocks the Node.js event loop for 3-5 seconds
-// per request under load.
+// in a tight loop. On a 0.25 vCPU ACA replica this blocks the Node.js
+// event loop for ~3-6 seconds per /regions request.
 //
 // Root cause: Lines marked with // BUG below
-//   - computeGridChecksum() does 50,000 SHA-256 hashes synchronously
+//   - computeGridChecksum() does 750,000 SHA-256 hashes synchronously
 //   - Called on EVERY /regions and /capacity request
 //   - Blocks the entire event loop — no concurrent requests possible
 //
-// SRE Agent should find: p99 latency spike to >3s on /regions,
-// correlate with this deployment, identify the sync crypto loop.
+// SRE Agent should find: P95 latency on /regions spikes to >3s,
+// correlate with this deployment's release.completedTime, and rollback.
 
 // grid-status-api — Zava Power ZeroOps Lab
 // (v2.1.0 — added grid telemetry integrity validation)
@@ -41,7 +41,7 @@ function computeGridChecksum(data) {
   // This was meant to run as a background job but was accidentally
   // placed in the request hot path during the v2.1.0 merge.
   let checksum = JSON.stringify(data);
-  for (let i = 0; i < 50000; i++) {  // BUG: 50K iterations blocks for ~3-5s
+  for (let i = 0; i < 750000; i++) {  // BUG: 750K iterations blocks for ~3-6s on 0.25 vCPU
     checksum = crypto.createHash("sha256").update(checksum).digest("hex");
   }
   return checksum;

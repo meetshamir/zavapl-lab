@@ -489,8 +489,33 @@ def poll_pipeline(run_id, label):
 
 def run_build_release(failure_scenario, services):
     """Trigger PowerGrid-Build; release auto-chains via resources.pipelines.
-    Returns dict: {build_id, release_id, build_url, release_url} or None."""
+    Returns dict: {build_id, release_id, build_url, release_url,
+                   sim_start, pre_revisions} or None.
+    pre_revisions is {service_name: active_revision_name_before_deploy} so
+    callers can later confirm whether a rollback actually occurred (i.e. the
+    active revision name differs from the one we deployed)."""
     sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Capture the currently-active ACA revision for each affected service
+    # BEFORE we deploy, so we can prove a real rollback happened later.
+    pre_revisions = {}
+    svc_list = services if isinstance(services, list) else [services]
+    aca_short = {"outage-api": "outage", "grid-status-api": "grid",
+                 "notification-svc": "notify", "meter-api": "meter"}
+    for svc in svc_list:
+        short = aca_short.get(svc, svc)
+        try:
+            r = subprocess.run(
+                ["az", "containerapp", "revision", "list",
+                 "-n", f"ca-{WORKLOAD}-{short}", "-g", RESOURCE_GROUP,
+                 "--query", "[?properties.active].name | [0]", "-o", "tsv"],
+                capture_output=True, text=True, timeout=20)
+            rev = (r.stdout or "").strip()
+            if rev:
+                pre_revisions[svc] = rev
+        except Exception:
+            pass
+
     console.print("\n[bold cyan]  ▶ Triggering PowerGrid-Build...[/]")
     build_id = run_ado_pipeline("PowerGrid-Build", {
         "failure_scenario": failure_scenario, "services": services,
@@ -545,6 +570,7 @@ def run_build_release(failure_scenario, services):
         "build_id": build_id, "release_id": release_id,
         "build_url": build_url, "release_url": release_url,
         "sim_start": sim_start,
+        "pre_revisions": pre_revisions,
     }
 
 # ── Alert Polling Helper ────────────────────────────────────
@@ -790,6 +816,15 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
     agent_thread_url = None
     new_release_seen_at = None  # when the rebuild→release chain produces new release
 
+    # Pre-deploy ACA revision name (for proof-of-rollback). If we ever see the
+    # active revision change from this name, the agent has actually rolled back
+    # (or rolled forward). Without that proof we never claim "rollback".
+    pre_revisions = (build_info or {}).get("pre_revisions") or {}
+    pre_deploy_revision = pre_revisions.get(service_name)
+    deployed_revision = None       # set the first time we observe active rev != pre
+    rollback_revision = None       # set when active rev changes again (back to pre or new)
+    last_revision_poll = datetime.min
+
     checks = []
     had_unhealthy = False
     consecutive_ok = 0
@@ -893,12 +928,39 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                     phases["snow"] = True
                     timeline.add(f"📋 SNOW incident created: {inc} — [link={snow_url}]open ticket[/link]", "magenta bold")
 
-            # ---- ROLLBACK + RESTORED detection (consecutive_ok after unhealthy) ----
-            if had_unhealthy and consecutive_ok >= RECOVERY_THRESHOLD and not phases["rollback"]:
-                phases["rollback"] = True
-                phases["restored"] = True
-                timeline.add(f"♻️  Rollback executed — service restored", "green bold")
-                rebuild_search_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            # ---- ROLLBACK detection — REAL revision change ----
+            # We only claim "rollback" when the active ACA revision name
+            # changes after deploy. Sample-counter recovery is misleading
+            # (could be JIT warmup, traffic shaping, transient slowdown).
+            if pre_deploy_revision and not phases["rollback"] \
+                    and (now - last_revision_poll).seconds >= 15:
+                last_revision_poll = now
+                aca_short = {"outage-api": "outage", "grid-status-api": "grid",
+                             "notification-svc": "notify", "meter-api": "meter"}
+                short = aca_short.get(service_name, service_name)
+                try:
+                    rr = subprocess.run(
+                        ["az", "containerapp", "revision", "list",
+                         "-n", f"ca-{WORKLOAD}-{short}", "-g", RESOURCE_GROUP,
+                         "--query", "[?properties.active].name | [0]", "-o", "tsv"],
+                        capture_output=True, text=True, timeout=15)
+                    cur = (rr.stdout or "").strip()
+                    if cur:
+                        if deployed_revision is None and cur != pre_deploy_revision:
+                            deployed_revision = cur
+                            timeline.add(
+                                f"📦 New revision active: {cur}", "dim")
+                        elif deployed_revision and cur != deployed_revision:
+                            rollback_revision = cur
+                            phases["rollback"] = True
+                            phases["restored"] = (consecutive_ok >= RECOVERY_THRESHOLD)
+                            target = "previous" if cur == pre_deploy_revision else "new"
+                            timeline.add(
+                                f"♻️  ACA revision rolled to {target} ({cur}) "
+                                f"— mitigation by SRE Agent", "green bold")
+                            rebuild_search_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                except Exception:
+                    pass
 
             # ---- FIX PR detection (Phase B starts after rollback) ----
             if phases["rollback"] and not phases["fix_pr"] and (now - last_pr_poll).seconds >= 20:
@@ -986,6 +1048,14 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             if build_info:
                 artifacts.append(f"  🔨 [link={build_info['build_url']}]Build #{build_info['build_id']}[/]")
                 artifacts.append(f"  🚀 [link={build_info['release_url']}]Release #{build_info['release_id']}[/]")
+            if pre_deploy_revision:
+                artifacts.append(f"  📦 Pre-deploy revision: [dim]{pre_deploy_revision}[/]")
+            if deployed_revision:
+                artifacts.append(f"  📦 Deployed revision:   [yellow]{deployed_revision}[/]")
+            if rollback_revision:
+                artifacts.append(f"  📦 Active now:          [green]{rollback_revision}[/]")
+            if agent_thread_url:
+                artifacts.append(f"  🤖 [link={agent_thread_url}]SRE Agent thread[/]")
             if snow_inc:
                 artifacts.append(f"  📋 [link={snow_url}]SNOW {snow_inc}[/]")
             if pr_id:
