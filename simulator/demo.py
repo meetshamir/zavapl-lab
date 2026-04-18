@@ -1942,6 +1942,78 @@ def scenario_replica_down():
         ])
 
 # ═══════════════════════════════════════════════════════════
+#  SCENARIO — Pod Health Audit (PPL-4) — Scheduled Task showcase
+# ═══════════════════════════════════════════════════════════
+POD_HEALTH_AUDIT_TASK_ID = "ee9f1059-ad74-4bc1-b552-f46536334f0e"
+
+def scenario_pod_audit():
+    show_backstory("🔬", "POD HEALTH AUDIT — proactive (PPL-4)",
+        "AKS / ACA pods can drift into degraded states (probe failures,\n"
+        "OOM, CPU saturation, memory leaks) without ever firing a sharp\n"
+        "alert. Waiting for an alert means waiting until users notice.\n\n"
+        "Instead, an SRE Agent Scheduled Task sweeps the entire fleet\n"
+        "every 15 minutes — checks ACA revision health, replica counts,\n"
+        "probe failures (Log Analytics), and 5xx / P95 (App Insights)\n"
+        "— then either updates a rolling 'all-clear' SNOW ticket or opens\n"
+        "a NEW incident with a consolidated chart attached.",
+
+        "1. We display the live Scheduled Task config from the SRE Agent\n"
+        "2. (Optional) Inject a probe failure into notification-svc\n"
+        "3. Wait for the next scheduled run (or invoke incident-handler now)\n"
+        "4. Show the SNOW work note / incident the agent created\n"
+        "5. Show the consolidated chart attached to that ticket")
+
+    # 1. Show the current ST config & last-execution status
+    console.print("[bold cyan]  ▶ Scheduled Task definition[/]\n")
+    try:
+        r = subprocess.run(["srectl", "scheduledtask", "get",
+                            "--id", POD_HEALTH_AUDIT_TASK_ID],
+                           capture_output=True, text=True, timeout=20)
+        out = (r.stdout or "").splitlines()
+        for line in out:
+            if any(k in line for k in ("Name", "Cron", "Status", "Executions",
+                                       "Last Execution", "Next Execution",
+                                       "Agent", "Description")):
+                console.print(f"    [dim]{line.strip()}[/]")
+    except Exception as e:
+        console.print(f"[yellow]  ⚠ srectl get failed: {str(e)[:80]}[/]")
+    console.print()
+
+    # 2. Offer to inject a probe-failure for drama
+    inject = console.input(
+        "[bold cyan]  Inject a notification-svc probe failure for the next sweep? "
+        "[y/N]: [/]").strip().lower()
+    if inject == "y":
+        console.print("[bold cyan]  ▶ Injecting probe failure (REQUIRED_CONFIG removed)...[/]")
+        ok, _o, err = run_az(
+            ["az", "containerapp", "update", "-n", f"ca-{WORKLOAD}-notify",
+             "-g", RESOURCE_GROUP, "--remove-env-vars", "REQUIRED_CONFIG",
+             "--output", "none"],
+            timeout=120, retries=1)
+        if ok:
+            console.print("[green]  ✓ injected — notification-svc liveness will start failing within 60s[/]\n")
+        else:
+            console.print(f"[yellow]  ⚠ inject failed: {err[:80]}[/]\n")
+
+    # 3. Tell the user how to trigger / when to expect it
+    console.print(Panel(
+        "  Next run will happen at the top of the next 15-minute slot\n"
+        "  (cron: */15 * * * *).\n\n"
+        "  You can also invoke the agent NOW interactively with:\n"
+        "    [cyan]srectl chat --agent incident-handler[/]\n"
+        "  ...and paste the same prompt as the scheduled task.\n\n"
+        "  After the run, find the SNOW ticket here:\n"
+        f"    [cyan][link={SN_URL}/incident_list.do?sysparm_query=short_descriptionLIKEpod%20health[/link][/]\n"
+        "  And the agent thread here:\n"
+        f"    [cyan][link={SRE_AGENT_THREAD_BASE}[/link][/]",
+        title="[bold]How to see the result[/]", border_style="cyan", width=92))
+
+    if inject == "y":
+        console.print("\n[dim]  Reminder: run [bold]option 10 (Reset All)[/dim] "
+                      "[dim]when done — that restores REQUIRED_CONFIG.[/]")
+    console.input("\n[dim]  Press Enter to return to menu...[/]")
+
+# ═══════════════════════════════════════════════════════════
 #  SCENARIO 8 — Reset All (Healthy Baseline)
 # ═══════════════════════════════════════════════════════════
 def _wake_servicenow(timeout=30):
@@ -2291,15 +2363,21 @@ def _system_status_panel():
 
 # ── Menu ────────────────────────────────────────────────────
 MENU_ITEMS = """
-  [bold cyan]1.[/]  💥  Bad Deployment — App Crash (SCADA Bug)
-  [bold cyan]2.[/]  🐌  Bad Deployment — Performance Regression
-  [bold cyan]3.[/]  🔌  Bad Deployment — Config Error (Wrong Port)
-  [bold cyan]4.[/]  💾  Disk Pressure (VM Alert)
-  [bold cyan]5.[/]  📈  Organic Load Spike (No Bug)
-  [bold cyan]6.[/]  🔨  Pipeline Build Failure
-  [bold cyan]7.[/]  🎫  ServiceNow Laptop Replacement
-  [bold cyan]8.[/]  🧹  Reset All (Healthy Baseline)
-  [bold cyan]9.[/]  🩺  One Replica Unresponsive (1 of 6)
+  [bold yellow]── PPL CORE SCENARIOS ──[/]
+  [bold cyan]1.[/]  💾  PPL-1: Disk Pressure (VM Alert)
+  [bold cyan]2.[/]  🩺  PPL-2: One App Server Unresponsive (1 of 6)
+  [bold cyan]3.[/]  🐌  PPL-3: Slow Response After Microservice Upgrade
+  [bold cyan]4.[/]  🔬  PPL-4: Pod Health Audit (Scheduled Task — proactive)
+
+  [bold yellow]── BONUS SCENARIOS ──[/]
+  [bold cyan]5.[/]  💥  Bad Deployment — App Crash (SCADA Bug)
+  [bold cyan]6.[/]  🔌  Bad Deployment — Config Error (Wrong Port)
+  [bold cyan]7.[/]  📈  Organic Load Spike (No Bug)
+  [bold cyan]8.[/]  🔨  Pipeline Build Failure
+  [bold cyan]9.[/]  🎫  ServiceNow Laptop Replacement
+
+  [bold yellow]── UTILITIES ──[/]
+  [bold cyan]10.[/] 🧹  Reset All (Healthy Baseline)
   [bold cyan]Q.[/]  🚪  Quit
 """
 
@@ -2318,10 +2396,16 @@ def main():
     # If launched with --scenario, run that scenario directly (used by new-window launch)
     if len(sys.argv) >= 3 and sys.argv[1] == "--scenario":
         scenarios = {
-            "1": scenario_crash, "2": scenario_perf, "3": scenario_config,
-            "4": scenario_disk, "5": scenario_load, "6": scenario_build_failure,
-            "7": scenario_servicenow, "8": scenario_reset,
-            "9": scenario_replica_down,
+            "1":  scenario_disk,
+            "2":  scenario_replica_down,
+            "3":  scenario_perf,
+            "4":  scenario_pod_audit,
+            "5":  scenario_crash,
+            "6":  scenario_config,
+            "7":  scenario_load,
+            "8":  scenario_build_failure,
+            "9":  scenario_servicenow,
+            "10": scenario_reset,
         }
         fn = scenarios.get(sys.argv[2])
         if fn:
@@ -2331,31 +2415,33 @@ def main():
 
     # Main menu — launches scenarios in new terminal windows
     scenarios = {
-        "1": "scenario_crash",
-        "2": "scenario_perf",
-        "3": "scenario_config",
-        "4": "scenario_disk",
-        "5": "scenario_load",
-        "6": "scenario_build_failure",
-        "7": "scenario_servicenow",
-        "8": "scenario_reset",
-        "9": "scenario_replica_down",
+        "1":  "scenario_disk",
+        "2":  "scenario_replica_down",
+        "3":  "scenario_perf",
+        "4":  "scenario_pod_audit",
+        "5":  "scenario_crash",
+        "6":  "scenario_config",
+        "7":  "scenario_load",
+        "8":  "scenario_build_failure",
+        "9":  "scenario_servicenow",
+        "10": "scenario_reset",
     }
     scenario_names = {
-        "1": "Bad Deployment — App Crash",
-        "2": "Bad Deployment — Perf Regression",
-        "3": "Bad Deployment — Config Error",
-        "4": "Disk Pressure (VM)",
-        "5": "Organic Load Spike",
-        "6": "Pipeline Build Failure",
-        "7": "ServiceNow Laptop Replacement",
-        "8": "Reset All",
-        "9": "One Replica Unresponsive",
+        "1":  "PPL-1 Disk Pressure",
+        "2":  "PPL-2 One Replica Unresponsive",
+        "3":  "PPL-3 Slow Response After Upgrade",
+        "4":  "PPL-4 Pod Health Audit (ST)",
+        "5":  "Bonus — Bad Deployment App Crash",
+        "6":  "Bonus — Bad Deployment Config Error",
+        "7":  "Bonus — Organic Load Spike",
+        "8":  "Bonus — Pipeline Build Failure",
+        "9":  "Bonus — ServiceNow Laptop Replacement",
+        "10": "Reset All",
     }
     while True:
         show_menu()
         choice = console.input(
-            "[bold cyan]  Select scenario (1-9, Q): [/]").strip().lower()
+            "[bold cyan]  Select scenario (1-10, Q): [/]").strip().lower()
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
