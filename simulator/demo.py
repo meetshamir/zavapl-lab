@@ -2346,40 +2346,55 @@ def _system_status_panel():
         ("Grid Status",  GRID_API_URL),
         ("Portal",       PORTAL_URL),
     ]
-    lines = []
-    for name, url in services:
+
+    def _http_row(name, url):
         code, ms = health_check(url, timeout=3)
         if code == 200:
-            lines.append(f"  {name:<16} [green]● UP[/]   {ms:.0f}ms")
-        elif code == 0:
-            lines.append(f"  {name:<16} [dim]● N/A[/]")
-        else:
-            lines.append(f"  {name:<16} [red]● {code}[/]  {ms:.0f}ms")
+            return f"  {name:<16} [green]● UP[/]   {ms:.0f}ms"
+        if code == 0:
+            return f"  {name:<16} [dim]● N/A[/]"
+        return f"  {name:<16} [red]● {code}[/]  {ms:.0f}ms"
 
-    # Notification — internal ingress, validate via ACA revision state
-    notify_status = _cached("notify_aca", _STATUS_CACHE_TTL, _notify_aca_status)
-    if notify_status is None:
-        lines.append(f"  {'Notification':<16} [dim]● N/A[/]")
-    elif notify_status == "up":
-        lines.append(f"  {'Notification':<16} [green]● UP[/]   [dim](internal)[/]")
-    else:
-        lines.append(f"  {'Notification':<16} [red]● {notify_status}[/]")
+    def _notify_row():
+        st = _cached("notify_aca", _STATUS_CACHE_TTL, _notify_aca_status)
+        if st is None:
+            return f"  {'Notification':<16} [dim]● N/A[/]"
+        if st == "up":
+            return f"  {'Notification':<16} [green]● UP[/]   [dim](internal)[/]"
+        return f"  {'Notification':<16} [red]● {st}[/]"
 
-    # ServiceNow PDI status
-    try:
-        r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
-                         auth=(SN_USER, SN_PASS),
-                         headers={"Accept": "application/json"}, timeout=5)
-        if r.status_code == 200:
-            lines.append(f"  {'ServiceNow':<16} [green]● AWAKE[/]")
-        elif r.status_code == 401:
-            lines.append(f"  {'ServiceNow':<16} [red]● AUTH ERR[/]")
-        else:
-            lines.append(f"  {'ServiceNow':<16} [yellow]● {r.status_code}[/]")
-    except requests.exceptions.Timeout:
-        lines.append(f"  {'ServiceNow':<16} [yellow]● HIBERNATING[/]")
-    except Exception:
-        lines.append(f"  {'ServiceNow':<16} [dim]● N/A[/]")
+    def _snow_row():
+        try:
+            r = requests.get(f"{SN_URL}/api/now/table/incident?sysparm_limit=1",
+                             auth=(SN_USER, SN_PASS),
+                             headers={"Accept": "application/json"}, timeout=5)
+            if r.status_code == 200:
+                return f"  {'ServiceNow':<16} [green]● AWAKE[/]"
+            if r.status_code == 401:
+                return f"  {'ServiceNow':<16} [red]● AUTH ERR[/]"
+            return f"  {'ServiceNow':<16} [yellow]● {r.status_code}[/]"
+        except requests.exceptions.Timeout:
+            return f"  {'ServiceNow':<16} [yellow]● HIBERNATING[/]"
+        except Exception:
+            return f"  {'ServiceNow':<16} [dim]● N/A[/]"
+
+    # Run all probes in parallel — was serial 8-15s, now ~max(probe time) ~5s
+    from concurrent.futures import ThreadPoolExecutor
+    tasks = [(name, _http_row, (name, url)) for name, url in services]
+    tasks.append(("Notification", _notify_row, ()))
+    tasks.append(("ServiceNow", _snow_row, ()))
+
+    lines = [None] * len(tasks)
+    with console.status("[cyan]Loading system status...[/]", spinner="dots"):
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {pool.submit(fn, *args): i
+                       for i, (_, fn, args) in enumerate(tasks)}
+            for fut in futures:
+                idx = futures[fut]
+                try:
+                    lines[idx] = fut.result(timeout=8)
+                except Exception:
+                    lines[idx] = f"  {tasks[idx][0]:<16} [dim]● N/A[/]"
 
     return Panel("\n".join(lines), title="[bold]System Status[/]",
                  border_style="dim", width=56)
