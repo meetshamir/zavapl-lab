@@ -71,22 +71,29 @@ reachability. A 5xx because the app can't reach `https://api.partner/`
 is still a config-shaped failure (wrong URL or firewall change).
 
 ### 5. Pinpoint the exact config delta + the code path that fails (REQUIRED)
-A generic "config missing" is NOT acceptable. Identify:
-  a. Which env var / config key changed (name + old value → new value).
-  b. Which deploy artifact introduced the change — the deploy YAML
-     diff (e.g. `k8s/base/application.yaml`) between the previous
-     healthy build's commit SHA and this build's commit SHA. Get both
-     SHAs via `GetPipelineRunHistory` on **PowerGrid-Build**.
-  c. The code path that reads that config and short-circuits — quote
-     the exact lines (≤5) showing the gating logic. Example:
-     ```js
-     // src/notification-svc/server.js:18-20  (unchanged for months)
-     if (!process.env.REQUIRED_CONFIG) {
-       return res.status(503).json({ error: "REQUIRED_CONFIG not set" });
-     }
+A generic "config missing" is NOT acceptable. The lab's config
+regressions are typically **hardcoded source-level constants** (not
+runtime env vars), so the diff must inspect actual code:
+  a. Get the build commit SHA from the failing build via
+     `GetPipelineRunHistory` on **PowerGrid-Build** → `sourceVersion`,
+     plus the previous healthy build's SHA.
+  b. Browse the failing service's source dir (e.g.
+     `src/notification-svc/`) for changed constants — URLs, ports,
+     hostnames, feature flags.
+  c. The actual failure path is usually a downstream call that times
+     out or refuses connection because the constant points to the
+     wrong endpoint. Trace it back to its declaration site.
+  d. Quote the offending line(s) (≤5 lines) and the dependent call.
+     Example for a wrong gateway port:
+     ```go
+     // src/notification-svc/main.go:35  (commit abc1234)
+     const gatewayURL = "http://notification-gateway.internal:9443/api/v2/send"
+     // INFRA-3291 migration; old port 8443 is closed in production
      ```
-  d. State the mechanism: WHICH env var, WHERE it was removed, WHICH
-     handler reads it, WHY the code returns 503 when missing.
+  e. State the mechanism: WHICH constant changed, WHERE it's used,
+     WHY the new value is wrong (port closed, host renamed, TLS
+     mismatch, etc.), and HOW the failure surfaces (timeout, conn
+     refused, 503, etc.).
 
 ## Output to caller
 
@@ -95,26 +102,28 @@ CONFIG REGRESSION RCA
   service:        notification-svc
   revision:       ca-powergrid-notify--0000017
   deploy_time:    21:02 UTC
-  symptom:        every POST /notify returns 503 within 50ms
+  symptom:        every POST /send returns 503 after ~5s timeout
   count_5min:     94
-  prior revision: REQUIRED_CONFIG=enabled  (worked fine)
-  config_delta:   REQUIRED_CONFIG removed from env
-                  (k8s/base/application.yaml line 73, commit abc1234)
+  prior revision: gatewayURL = ":8443"  (worked fine)
   code_cause:     |
-    src/notification-svc/server.js lines 18-20 (unchanged for months):
+    src/notification-svc/main.go line 35 (commit abc1234, build #44,
+    INFRA-3291 TLS-1.3 migration):
 
-      if (!process.env.REQUIRED_CONFIG) {
-        return res.status(503).json({ error: "REQUIRED_CONFIG not set" });
-      }
+      const gatewayURL = "http://notification-gateway.internal:9443/api/v2/send"
 
-    The /notify handler short-circuits with 503 when the env var is
-    absent. The deploy template was edited to remove the env var
-    declaration, so every request hits this guard.
-  fix direction: re-add REQUIRED_CONFIG=enabled to ACA env vars
-                 (revert the YAML line); OR make REQUIRED_CONFIG
-                 optional with a sensible default in the code.
+    The internal gateway listens on port 8443 in production; port
+    9443 was the staging endpoint during the migration window and
+    was never opened in prod. The /send handler dials this URL on
+    every request and times out after ~5s, returning 503 to the
+    caller. Health check passes because it doesn't exercise the
+    downstream call.
+  fix direction: revert the constant to `:8443`; OR (better) move
+                 the gateway URL into a runtime config so it can be
+                 changed without a redeploy, and add a
+                 startup-time TCP connect probe so the service fails
+                 fast instead of passing health checks.
 ```
 
 Hand off to `deployment-rollback` → `servicenow-incident-mgmt` →
-`create-pr-or-issue`. The `code_cause` + `config_delta` blocks go
-verbatim into the SNOW **Root Cause** section.
+`create-pr-or-issue`. The `code_cause` block goes verbatim into the
+SNOW **Root Cause** section.

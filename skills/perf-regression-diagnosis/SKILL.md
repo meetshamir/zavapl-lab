@@ -74,22 +74,23 @@ stream filtered by `RevisionName == "{REVISION_NAME}"`. Look for:
 - GC pause warnings
 - "EVENTLOOP_BLOCKED", "long task" warnings (Node)
 - Thread pool saturation (Python)
-- **Startup banner lines that mention latency injection** — e.g.
-  `SIMULATE_DELAY_MS=N — artificial latency enabled` (Node) or
-  similar Python equivalents. These reveal env-var-driven latency
-  middleware that isn't visible in dependency traces.
+- Per-request log lines emitted from a new code path (e.g.
+  `Grid checksum: <hash>...`) that signal a freshly added expensive
+  computation in the handler.
 
 ### 6. Check chaos / latency-injection endpoints
-Some services expose an admin endpoint that injects server-side
-latency (used by load tests but sometimes left enabled). For each
-slow service, GET `https://<service-fqdn>/chaos/status` and
-`/chaos/latency` if they exist. If `active: true` or `latency_ms > 0`,
-**that is your root cause** — not a code regression. Disable via
-`DELETE /chaos/latency` or restart the revision.
+Some services expose admin endpoints that inject server-side latency
+(scenario 5 uses these to simulate organic load). For each slow
+service, GET `https://<service-fqdn>/chaos/status`. If `active: true`
+or `latency_ms > 0`, **that is your root cause** — not a code
+regression. Disable via `DELETE /chaos/latency`. Note: this is an
+ORTHOGONAL failure mode to a deploy regression — if you got here from
+post-deploy validation, chaos status will normally be inactive and
+the cause is in the new image.
 
 ### 7. Pinpoint the code change (REQUIRED for the SNOW summary)
-A generic "latency baked into the code" is NOT acceptable. You must
-identify the SPECIFIC change. Steps:
+A generic "latency in the code" is NOT acceptable. You must identify
+the SPECIFIC change. Steps:
   a. Get the build commit SHA from the failing build:
      `GetPipelineRunHistory` on **PowerGrid-Build** for buildId
      → `sourceVersion` field.
@@ -97,23 +98,26 @@ identify the SPECIFIC change. Steps:
   c. Use `GetFileContents` / repo browse on saziz_microsoft/zavapl-lab
      to inspect the diff for the failing service's source dir
      (e.g. `src/grid-status-api/`). Pay attention to:
-       - new `setTimeout` / `await sleep` / `time.sleep` calls
-       - new env-var reads that gate latency middleware
-       - new synchronous loops over request payloads
+       - new synchronous CPU-heavy loops over request payloads
+         (e.g. nested loops, repeated hashing, large JSON walks)
        - new external HTTP/DB calls without timeouts
-       - changes to Dockerfile ENV / CMD that toggle latency
+       - new locks / mutex contention
+       - blocking I/O introduced into an async handler (e.g.
+         `fs.readFileSync` instead of `fs.promises.readFile`)
+       - new middleware registered on every request
   d. Quote the exact function name and the offending lines (≤5 lines)
-     in the RCA. Example:
+     in the RCA. Example for an O(n) hashing hot path:
      ```js
-     // src/grid-status-api/server.js:42-46  (commit abc1234)
-     if (SIMULATE_DELAY_MS > 0) {
-       app.use((_req, _res, next) => {
-         setTimeout(next, SIMULATE_DELAY_MS);  // adds 2000ms per request
-       });
+     // src/grid-status-api/server.js  computeGridChecksum()
+     // (commit abc1234, build #44)
+     for (let i = 0; i < 750000; i++) {
+       checksum = crypto.createHash("sha256").update(checksum).digest("hex");
      }
      ```
   e. State the mechanism in plain English: WHICH function, WHAT it
-     does, WHY it slows requests, by HOW MUCH.
+     does, WHY it slows requests, by HOW MUCH (e.g. "blocks the Node
+     event loop for ~3-6 s per call on 0.25 vCPU; called from
+     /regions and /capacity handlers, so every request waits").
 
 ## Output to caller
 Return a structured RCA. The `code_cause` field is REQUIRED and must
@@ -124,31 +128,34 @@ PERF REGRESSION RCA
   service:        grid-status-api
   revision:       ca-powergrid-grid--0000031
   deploy_time:    21:02 UTC
-  scope:          all endpoints (uniform 2000 ms floor)
-  p95 before:     115 ms (revision 0000030, image :stable)
-  p95 after:      2154 ms (revision 0000031, image :latest)
+  scope:          /regions and /capacity (both call same fn)
+  p95 before:     115 ms (revision 0000030)
+  p95 after:      5200 ms (revision 0000031, +45x)
   dependencies:   p95 < 50 ms (not the bottleneck)
   chaos_endpoint: /chaos/status returns inactive
-  startup_log:    "SIMULATE_DELAY_MS=2000 — artificial latency enabled"
+  console_log:    "Grid checksum: 8f3a2b...  (per request)"
   code_cause:     |
-    src/grid-status-api/server.js lines 42-46 (commit abc1234,
-    introduced in build #44):
+    src/grid-status-api/server.js — computeGridChecksum()
+    (commit abc1234, build #44, added per ticket SEC-2847):
 
-      if (SIMULATE_DELAY_MS > 0) {
-        app.use((_req, _res, next) => {
-          setTimeout(next, SIMULATE_DELAY_MS);
-        });
+      function computeGridChecksum(data) {
+        let checksum = JSON.stringify(data);
+        for (let i = 0; i < 750000; i++) {
+          checksum = crypto.createHash("sha256").update(checksum).digest("hex");
+        }
+        return checksum;
       }
 
-    A global Express middleware delays EVERY request by
-    SIMULATE_DELAY_MS milliseconds before invoking the handler. The
-    :latest image was built with the deploy YAML setting
-    SIMULATE_DELAY_MS=2000, which makes every endpoint sleep 2 s
-    before responding.
-  fix direction: revert the deploy manifest's SIMULATE_DELAY_MS
-                 setting to 0 (or remove the env var); OR remove the
-                 dev-only middleware entirely from server.js so it
-                 cannot be re-enabled in production.
+    Called synchronously from the /regions and /capacity handlers on
+    every request. The 750K-iteration SHA-256 loop blocks the Node
+    event loop for ~3-6 s on a 0.25 vCPU replica, so EVERY request
+    (not just /regions) queues behind it. Intended to run as a
+    background job, accidentally placed in the request hot path
+    during the v2.1.0 merge.
+  fix direction: move the checksum to a background worker / queue;
+                 OR cache results by payload hash; OR reduce the
+                 iteration count to a meaningful security bound
+                 (1 round of SHA-256 is sufficient for integrity).
 ```
 
 This RCA is the body for the `servicenow-incident-mgmt` work note and

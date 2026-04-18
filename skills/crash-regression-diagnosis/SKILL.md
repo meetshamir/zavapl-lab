@@ -73,13 +73,15 @@ SPECIFIC change:
      `src/outage-api/`) — focus on the file/line referenced in the
      exception stack trace.
   d. Quote the exact function and the offending lines (≤5 lines) in
-     the RCA. Example:
+     the RCA. Example for a NoneType crash:
      ```python
-     # src/outage-api/app.py:14  (commit abc1234)
-     from flask.ext.cors import CORS   # removed in Flask 3.0
+     # src/outage-api/app.py:126  (commit abc1234)
+     enriched["crew_display"] = crew.upper().replace("_", " ")
+     # crew is read from outage["crew_status"] which is None for
+     # outages that haven't been dispatched yet
      ```
-  e. State the mechanism: WHICH line throws, WHAT it expects, WHY
-     it's gone, what the fix line should be.
+  e. State the mechanism: WHICH line throws, WHAT input causes it,
+     WHY it slipped past tests, what the safe call should be.
 
 ## Output to caller
 
@@ -88,21 +90,25 @@ CRASH REGRESSION RCA
   service:        outage-api
   revision:       ca-powergrid-outage--0000044
   deploy_time:    21:02 UTC
-  symptom:        500 on every request to /api/outages
-  exception:      ModuleNotFoundError: No module named 'flask.ext'
-  count_5min:     127 (matches request count — every request fails)
-  prior revision: 0 exceptions (image :stable, Flask 2.3 → import worked)
+  symptom:        500 on every GET /outages with active outages
+  exception:      AttributeError: 'NoneType' object has no attribute 'upper'
+                  (src/outage-api/app.py line 126, in enrich_outage)
+  count_5min:     127 (matches request count for /outages)
+  prior revision: 0 exceptions on this endpoint
   code_cause:     |
-    src/outage-api/app.py line 14 (commit abc1234, build #44):
+    src/outage-api/app.py line 126 (commit abc1234, build #44,
+    GRID-2847 enrichment work):
 
-      from flask.ext.cors import CORS
+      enriched["crew_display"] = crew.upper().replace("_", " ")
 
-    Flask 3.0 removed the legacy `flask.ext` import shim. The
-    outage-api still imports CORS via the old path, so module load
-    fails at process startup → every request returns 500 because
-    Gunicorn never gets a working app object.
-  fix direction: replace with `from flask_cors import CORS`
-                 (one-line change, no behavior change).
+    `crew` is read from `outage["crew_status"]`. SCADA returns
+    `crew_status: None` for any outage that hasn't been dispatched
+    yet (~30% of records in production). Calling `.upper()` on None
+    raises AttributeError, propagating as a 500 to the caller. Unit
+    tests passed because the test fixture only had outages with
+    completed dispatch records.
+  fix direction: guard the call — `(crew or "unassigned").upper()`,
+                 OR skip the enrichment when crew_status is None.
 ```
 
 Pass to `deployment-rollback` (immediate mitigation), then

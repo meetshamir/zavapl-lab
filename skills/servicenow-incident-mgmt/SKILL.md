@@ -158,34 +158,44 @@ include `config_delta` showing old → new value and the deploy
 artifact line that introduced it.>
 
 Example (perf regression):
-"The :latest image of grid-status-api enables a global Express
-middleware that delays every request:
+"src/grid-status-api/server.js — `computeGridChecksum()` (commit
+abc1234, build #44, added per ticket SEC-2847) runs a synchronous
+SHA-256 hash chain on every request:
 
 ```js
-// src/grid-status-api/server.js:42-46  (commit abc1234, build #44)
-if (SIMULATE_DELAY_MS > 0) {
-  app.use((_req, _res, next) => {
-    setTimeout(next, SIMULATE_DELAY_MS);
-  });
+function computeGridChecksum(data) {
+  let checksum = JSON.stringify(data);
+  for (let i = 0; i < 750000; i++) {
+    checksum = crypto.createHash('sha256').update(checksum).digest('hex');
+  }
+  return checksum;
 }
 ```
 
-The deploy YAML for revision ca-powergrid-grid--0000031 sets
-`SIMULATE_DELAY_MS=2000`, so every endpoint sleeps 2 s before
-responding. The :stable image was built from the same source but
-deployed without the env var, so the middleware was a no-op."
+Called from the /regions and /capacity handlers. The 750K-iteration
+loop blocks the Node event loop for ~3-6 s per call on a 0.25 vCPU
+replica, so every request to either endpoint queues behind it.
+Intended to run as a background job, accidentally placed in the
+request hot path during the v2.1.0 merge."
 
 Example (crash regression):
-"src/outage-api/app.py line 14 imports `from flask.ext.cors import CORS`.
-Flask 3.0 (introduced in build #44) removed the legacy `flask.ext`
-shim, so module load fails at process startup → every request returns
-500 because Gunicorn never gets a working app."
+"src/outage-api/app.py line 126 (commit abc1234, build #44, GRID-2847
+enrichment work) calls `crew.upper().replace('_', ' ')`. `crew` is
+read from `outage['crew_status']`, which SCADA returns as `None` for
+any outage that hasn't been dispatched yet (~30% of records in
+production). Calling `.upper()` on None raises `AttributeError`,
+propagating as a 500. Unit tests passed because the test fixture
+only had outages with completed dispatch records."
 
 Example (config regression):
-"k8s/base/application.yaml line 73 (commit abc1234) removed
-`REQUIRED_CONFIG=enabled` from the notification-svc env. The /notify
-handler short-circuits with 503 when that env is absent
-(src/notification-svc/server.js:18-20)."
+"src/notification-svc/main.go line 35 (commit abc1234, build #44,
+INFRA-3291 TLS-1.3 migration) sets
+`gatewayURL = 'http://notification-gateway.internal:9443/api/v2/send'`.
+Port 9443 was the staging endpoint during the migration window and
+was never opened in prod (gateway listens on 8443). The /send handler
+dials this URL on every request and times out after ~5 s, returning
+503. Health check passes because it doesn't exercise the downstream
+call."
 
 ---
 
