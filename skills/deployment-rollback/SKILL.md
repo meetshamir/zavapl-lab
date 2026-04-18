@@ -147,31 +147,95 @@ If the new revision introduced a new API contract that other services now depend
 
 ## Phase 3: EXECUTE ROLLBACK
 
-### 3.1 Activate the Previous Good Revision
+### 3.0 CRITICAL — Detect Revision Mode FIRST
+The rollback procedure differs based on the container app's revision mode.
+**Always check this first** — calling `ingress traffic set` against a Single
+mode app will fail with: *"Containerapp '<name>' is configured for single
+revision. Set revision mode to multiple in order to set ingress traffic."*
+
+```bash
+az containerapp show \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --query "properties.configuration.activeRevisionsMode" \
+  -o tsv
+```
+
+- Output `Single` → use **3.1A** (image-swap rollback)
+- Output `Multiple` → use **3.1B** (traffic-shift rollback)
+
+---
+
+### 3.1A Single-Revision Mode Rollback (image swap)
+
+In single-revision mode, only one revision serves traffic and it is always
+the *latest* one. To roll back you create a NEW revision pointing at the
+previous container image — do NOT activate the old revision and do NOT
+attempt to set traffic weights.
+
+Step 1 — discover the previous good image tag (the image of the revision
+that was active immediately before the bad one):
+```bash
+az containerapp revision list \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --all \
+  --query "sort_by([], &properties.createdTime)[-3:].{name:name, image:properties.template.containers[0].image, created:properties.createdTime}" \
+  -o table
+```
+
+Step 2 — execute the rollback by updating the image. This creates a new
+revision whose code is the previous-good code, immediately taking traffic:
+```bash
+az containerapp update \
+  -g <resourceGroup> \
+  -n <container-app-name> \
+  --image <previous-good-image> \
+  --revision-suffix "rollback$(date +%H%M%S)"
+```
+
+The `--revision-suffix` makes the rollback revision easy to identify in
+later audits (e.g. `ca-powergrid-grid--rollback143052`).
+
+Step 3 — confirm the new active revision:
+```bash
+az containerapp revision list -g <rg> -n <app> \
+  --query "[?properties.active] | [].{name:name, image:properties.template.containers[0].image}" \
+  -o table
+```
+
+The bad revision is automatically deactivated by ACA when the new revision
+becomes ready (single-revision mode behavior). No deactivate call needed.
+
+> Tip — for PowerGrid services the convention is that a stable image tag
+> (`acrpowergrid.azurecr.io/<service>:stable`) always points at the last
+> known-good build. If unsure of the previous build's numeric tag, swap to
+> `:stable` instead.
+
+---
+
+### 3.1B Multiple-Revision Mode Rollback (traffic shift)
+
+Only use these commands when `activeRevisionsMode == "Multiple"`.
+
 ```bash
 az containerapp revision activate \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision <previous-good-revision>
-```
 
-### 3.2 Shift 100% Traffic to the Good Revision
-```bash
 az containerapp ingress traffic set \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision-weight <previous-good-revision>=100
-```
 
-### 3.3 Deactivate the Bad Revision
-```bash
 az containerapp revision deactivate \
   -g <resourceGroup> \
   -n <container-app-name> \
   --revision <bad-revision>
 ```
 
-### Alternative: Gradual Traffic Shift (Canary Rollback)
+### Alternative: Gradual Traffic Shift (Canary Rollback) — Multiple mode only
 If you want to be cautious, shift traffic gradually:
 ```bash
 # Step 1: 80/20 split — send most traffic to the good revision
@@ -194,6 +258,17 @@ az containerapp revision deactivate \
 ```
 
 ### Quick Reference
+
+**Single-revision mode (most common for PowerGrid services):**
+```bash
+# Detect mode + roll back via image swap to the :stable tag in 1 line
+PREV_IMG=$(az containerapp revision list -g <rg> -n <app> --all \
+  --query "sort_by([?properties.active==\`false\`], &properties.createdTime)[-1].properties.template.containers[0].image" -o tsv)
+az containerapp update -g <rg> -n <app> --image "$PREV_IMG" \
+  --revision-suffix "rollback$(date +%H%M%S)"
+```
+
+**Multiple-revision mode:**
 ```bash
 # Full rollback in 3 commands:
 az containerapp revision activate -g <rg> -n <app> --revision <good-rev>
