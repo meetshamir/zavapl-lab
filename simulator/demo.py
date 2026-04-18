@@ -471,6 +471,95 @@ def _incident_summary_panel(service_name, incident_started_ts, rollback_ts,
     return ("\n".join(bits), "red" if not recovered_ts else "green")
 
 
+def render_incident_snapshot(service_name, checks, timeline,
+                             incident_started_ts, incident_started_idx,
+                             mitigation_ts, mitigation_idx,
+                             recovered_ts, recovered_idx,
+                             incident_peak, healthy_baseline,
+                             value_key="ms", ok_key="ok", unit="ms",
+                             mitigation_label="SRE Agent action",
+                             mitigation_icon="🤖",
+                             scale_floor=100.0, scale_multiplier=8,
+                             extra_artifacts=None):
+    """Post-incident SNAPSHOT: a static, comprehensive view rendered AFTER
+    the realtime loop exits on recovery. Shows the full lifecycle (baseline
+    → degradation → mitigation → recovery) with all key events overlaid on
+    the metric graph, plus MTTR breakdown.
+
+    Renders directly to console. Safe to call when no incident occurred
+    (renders nothing) or when recovery did not happen (renders nothing —
+    the realtime view is still the source of truth in that case).
+    """
+    if incident_started_ts is None or recovered_ts is None or not checks:
+        return
+
+    fmt = "%H:%M:%S"
+    detect_to_mit = ((mitigation_ts - incident_started_ts).total_seconds()
+                     if mitigation_ts and mitigation_ts >= incident_started_ts else None)
+    mit_to_rec = ((recovered_ts - mitigation_ts).total_seconds()
+                  if mitigation_ts and recovered_ts >= mitigation_ts else None)
+    mttr = (recovered_ts - incident_started_ts).total_seconds()
+
+    # ── Header banner ─────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        f"[bold cyan]📸 INCIDENT SNAPSHOT[/]  —  [bold]{service_name}[/]\n"
+        f"[dim]Static post-incident view of the full lifecycle. "
+        f"The realtime graph above remained live throughout the incident.[/]",
+        border_style="cyan", width=92, padding=(0, 1),
+    ))
+
+    # ── MTTR breakdown ────────────────────────────────────────
+    mttr_bits = []
+    mttr_bits.append(f"  [red]●[/] [bold]Detected[/]    {incident_started_ts.strftime(fmt)}"
+                     f"   [dim]peak[/] [red]{int(incident_peak)}{unit}[/]")
+    if mitigation_ts:
+        if detect_to_mit is not None and detect_to_mit >= 0:
+            mttr_bits.append(f"  [yellow]●[/] [bold]{mitigation_label}[/]  "
+                             f"{mitigation_ts.strftime(fmt)}   "
+                             f"[dim](+{int(detect_to_mit)}s after detection)[/]")
+        else:
+            mttr_bits.append(f"  [yellow]●[/] [bold]{mitigation_label}[/]  "
+                             f"{mitigation_ts.strftime(fmt)}   "
+                             f"[dim](pre-existing thread)[/]")
+    mttr_bits.append(f"  [green]●[/] [bold]Recovered[/]   {recovered_ts.strftime(fmt)}"
+                     + (f"   [dim](+{int(mit_to_rec)}s after mitigation)[/]"
+                        if mit_to_rec is not None and mit_to_rec >= 0 else ""))
+    mttr_bits.append("")
+    mttr_bits.append(f"  [bold]MTTR (detect → recovery):[/]  [green bold]{int(mttr)}s[/]"
+                     + (f"   [dim]baseline {int(healthy_baseline)}{unit}[/]"
+                        if healthy_baseline else ""))
+    console.print(Panel("\n".join(mttr_bits),
+        title="[bold]Lifecycle Summary[/]",
+        border_style="green", width=92, padding=(0, 1)))
+
+    # ── Full metric graph (whole incident captured) ───────────
+    spark_markup = _latency_sparkline(
+        checks, baseline_ms=healthy_baseline, width=86,
+        incident_idx=incident_started_idx,
+        recovered_idx=recovered_idx,
+        rollback_idx=mitigation_idx,
+        value_key=value_key, ok_key=ok_key, unit=unit,
+        scale_floor=scale_floor, scale_multiplier=scale_multiplier,
+    )
+    console.print(Panel(spark_markup,
+        title=f"[bold]Metric over time — full incident[/]  "
+              f"([dim]{len(checks)} probes[/])",
+        border_style="cyan", width=92, padding=(0, 1)))
+
+    # ── All events (not just last 6) ──────────────────────────
+    console.print(timeline.render_full(width=92))
+
+    # ── Optional artifacts (links to SNOW, PR, builds, etc.) ──
+    if extra_artifacts:
+        lines = [a for a in extra_artifacts if a]
+        if lines:
+            console.print(Panel("\n".join(lines),
+                title="[bold]Artifacts[/]",
+                border_style="dim", width=92, padding=(0, 1)))
+    console.print()
+
+
 # ── Event Timeline ──────────────────────────────────────────
 class EventTimeline:
     def __init__(self):
@@ -491,6 +580,17 @@ class EventTimeline:
         t.add_column("Δ", style="dim", width=6)
         t.add_column("Event", width=48)
         for e in self.events[-6:]:
+            t.add_row(e["ts"], e["elapsed"], f"[{e['style']}]{e['text']}[/]")
+        return t
+
+    def render_full(self, title="Event Timeline (full)", width=92):
+        """All events, not just the last 6 — used in post-incident snapshot."""
+        t = Table(title=f"[bold]{title}[/]", box=box.ROUNDED,
+                  border_style="blue", width=width)
+        t.add_column("Time", style="dim", width=9)
+        t.add_column("Δ", style="dim", width=6)
+        t.add_column("Event", width=max(20, width - 22))
+        for e in self.events:
             t.add_row(e["ts"], e["elapsed"], f"[{e['style']}]{e['text']}[/]")
         return t
 
@@ -1041,6 +1141,16 @@ def monitor_health(url, path, service_name, agent_name,
             grid.add_row(Text("  [dim]q = return to menu[/]"))
             live.update(grid)
             time.sleep(2)
+    # Post-incident snapshot (only if a regression actually happened and recovered)
+    render_incident_snapshot(
+        service_name, checks, timeline,
+        incident_started_ts, incident_started_idx,
+        agent_action_ts, agent_action_idx,
+        recovered_ts, recovered_idx,
+        incident_peak_ms, healthy_baseline_ms,
+        mitigation_label=f"{agent_name} action",
+        mitigation_icon="🤖",
+    )
     return True
 
 # ── End-to-End Deployment Monitor (Phase A + Phase B) ──────────────────────
@@ -1432,6 +1542,45 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             live.update(grid)
             time.sleep(2)
 
+    # Post-incident snapshot — pass through the artifact links so the
+    # static view also has clickable build/SNOW/PR/rebuild/redeploy refs.
+    # rollback_idx is computed inside the loop only; recompute here.
+    _rb_idx = None
+    if rollback_ts:
+        for _k, _c in enumerate(checks):
+            if _c["ts"] >= rollback_ts:
+                _rb_idx = _k
+                break
+    _snap_artifacts = []
+    if build_info:
+        _snap_artifacts.append(f"  🔨 [link={build_info['build_url']}]Build #{build_info['build_id']}[/]")
+        _snap_artifacts.append(f"  🚀 [link={build_info['release_url']}]Release #{build_info['release_id']}[/]")
+    if pre_deploy_revision:
+        _snap_artifacts.append(f"  📦 Pre-deploy revision: [dim]{pre_deploy_revision}[/]")
+    if deployed_revision:
+        _snap_artifacts.append(f"  📦 Deployed revision:   [yellow]{deployed_revision}[/]")
+    if rollback_revision:
+        _snap_artifacts.append(f"  📦 Active now:          [green]{rollback_revision}[/]")
+    if agent_thread_url:
+        _snap_artifacts.append(f"  🤖 [link={agent_thread_url}]SRE Agent thread[/]")
+    if snow_inc:
+        _snap_artifacts.append(f"  📋 [link={snow_url}]SNOW {snow_inc}[/]")
+    if pr_id:
+        _snap_artifacts.append(f"  📝 [link={pr_url}]PR !{pr_id}[/]")
+    if rebuild_id:
+        _snap_artifacts.append(f"  🔨 [link={rebuild_url}]Rebuild #{rebuild_id}[/]")
+    if redeploy_id:
+        _snap_artifacts.append(f"  🚀 [link={redeploy_url}]Re-deploy #{redeploy_id}[/]")
+    render_incident_snapshot(
+        service_name, checks, timeline,
+        incident_started_ts, incident_started_idx,
+        rollback_ts, _rb_idx,
+        recovered_ts, recovered_idx,
+        incident_peak_ms, healthy_baseline_ms,
+        mitigation_label="SRE rollback",
+        mitigation_icon="♻️",
+        extra_artifacts=_snap_artifacts,
+    )
     return True
 
 # ═══════════════════════════════════════════════════════════
@@ -1896,6 +2045,19 @@ def scenario_disk():
             live.update(grid)
             time.sleep(2)
 
+    # Post-incident snapshot (disk %)
+    render_incident_snapshot(
+        "VM disk", checks, timeline,
+        incident_started_ts, incident_started_idx,
+        agent_action_ts, agent_action_idx,
+        recovered_ts, recovered_idx,
+        incident_peak_pct, healthy_baseline_pct,
+        value_key="pct", ok_key="ok", unit="%",
+        mitigation_label="vm-ops-agent action",
+        mitigation_icon="🤖",
+        scale_floor=100.0, scale_multiplier=1,
+    )
+
     show_result("🎉", "DISK PRESSURE RESOLVED!", [
         "SRE Agent (vm-ops-agent):",
         "- Detected disk at 94% via Azure Monitor alert",
@@ -2197,6 +2359,17 @@ def scenario_load():
             )
         except Exception:
             pass
+
+    # Post-incident snapshot for load spike (latency)
+    render_incident_snapshot(
+        "grid-status-api", checks, timeline,
+        incident_started_ts, incident_started_idx,
+        agent_action_ts, agent_action_idx,
+        recovered_ts, recovered_idx,
+        incident_peak_ms, healthy_baseline_ms,
+        mitigation_label="SRE Agent triggered",
+        mitigation_icon="🤖",
+    )
 
     show_result("📈", "LOAD SPIKE — SRE AGENT INVESTIGATING", [
         "SRE Agent (autonomous via HTTP trigger):",
