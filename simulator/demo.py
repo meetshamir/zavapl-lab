@@ -1884,7 +1884,7 @@ def scenario_servicenow():
         pass
 
 # ═══════════════════════════════════════════════════════════
-#  SCENARIO 9 — One Replica Unresponsive (PPL-2)
+#  SCENARIO 9 — One Replica Unresponsive
 # ═══════════════════════════════════════════════════════════
 def scenario_replica_down():
     show_backstory("🩺", "ONE REPLICA UNRESPONSIVE — 1 of 6 servers",
@@ -1897,7 +1897,7 @@ def scenario_replica_down():
         "From outside: the service is mostly fast, occasionally agonizingly\n"
         "slow. Customers see intermittent timeouts on the operations portal.",
 
-        "1. We scale grid-status-api to exactly 6 replicas (PPL-style fleet)\n"
+        "1. We scale grid-status-api to exactly 6 replicas (mirrors a real fleet)\n"
         "2. We POST /chaos/latency once → only 1 replica accepts it\n"
         "3. The other 5 stay normal; that 1 replica adds 8s to every request\n"
         "4. /regions latency becomes bimodal (most fast, ~17% slow)\n"
@@ -1965,12 +1965,12 @@ def scenario_replica_down():
         ])
 
 # ═══════════════════════════════════════════════════════════
-#  SCENARIO — Pod Health Audit (PPL-4) — Scheduled Task showcase
+#  SCENARIO — Pod Health Audit — Scheduled Task showcase
 # ═══════════════════════════════════════════════════════════
 POD_HEALTH_AUDIT_TASK_ID = "ee9f1059-ad74-4bc1-b552-f46536334f0e"
 
 def scenario_pod_audit():
-    show_backstory("🔬", "POD HEALTH AUDIT — proactive (PPL-4)",
+    show_backstory("🔬", "POD HEALTH AUDIT — proactive",
         "AKS / ACA pods can drift into degraded states (probe failures,\n"
         "OOM, CPU saturation, memory leaks) without ever firing a sharp\n"
         "alert. Waiting for an alert means waiting until users notice.\n\n"
@@ -2401,11 +2401,11 @@ def _system_status_panel():
 
 # ── Menu ────────────────────────────────────────────────────
 MENU_ITEMS = """
-  [bold yellow]── PPL CORE SCENARIOS ──[/]
-  [bold cyan]1.[/]  💾  PPL-1: Disk Pressure (VM Alert)
-  [bold cyan]2.[/]  🩺  PPL-2: One App Server Unresponsive (1 of 6)
-  [bold cyan]3.[/]  🐌  PPL-3: Slow Response After Microservice Upgrade
-  [bold cyan]4.[/]  🔬  PPL-4: Pod Health Audit (Scheduled Task — proactive)
+  [bold yellow]── CORE SCENARIOS ──[/]
+  [bold cyan]1.[/]  💾  Disk Pressure (VM Alert)
+  [bold cyan]2.[/]  🩺  One App Server Unresponsive (1 of 6)
+  [bold cyan]3.[/]  🐌  Slow Response After Microservice Upgrade
+  [bold cyan]4.[/]  🔬  Pod Health Audit (Scheduled Task — proactive)
 
   [bold yellow]── BONUS SCENARIOS ──[/]
   [bold cyan]5.[/]  💥  Bad Deployment — App Crash (SCADA Bug)
@@ -2464,10 +2464,10 @@ def main():
         "10": "scenario_reset",
     }
     scenario_names = {
-        "1":  "PPL-1 Disk Pressure",
-        "2":  "PPL-2 One Replica Unresponsive",
-        "3":  "PPL-3 Slow Response After Upgrade",
-        "4":  "PPL-4 Pod Health Audit (ST)",
+        "1":  "Disk Pressure",
+        "2":  "One Replica Unresponsive",
+        "3":  "Slow Response After Upgrade",
+        "4":  "Pod Health Audit (ST)",
         "5":  "Bonus — Bad Deployment App Crash",
         "6":  "Bonus — Bad Deployment Config Error",
         "7":  "Bonus — Organic Load Spike",
