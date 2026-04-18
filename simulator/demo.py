@@ -611,7 +611,7 @@ def monitor_health(url, path, service_name, agent_name,
     timeline = EventTimeline()
     
     if trigger_type == "release":
-        timeline.add(f"⚡ Release trigger fired → {agent_name} investigating", "yellow bold")
+        timeline.add(f"⏳ Watching SRE Agent for {agent_name} pickup...", "dim")
     else:
         timeline.add(f"Monitoring {service_name} — waiting for alert", "cyan")
 
@@ -620,7 +620,7 @@ def monitor_health(url, path, service_name, agent_name,
     consecutive_ok = 0
     recovered = False
     alert_fired = (trigger_type == "release")  # release trigger = already triggered
-    agent_started = (trigger_type == "release")
+    agent_started = False
     last_alert_poll = datetime.min
     last_agent_poll = datetime.min
 
@@ -740,7 +740,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
         timeline.add(
             f"🚀 Release #{build_info['release_id']} deployed — "
             f"[link={build_info['release_url']}]view[/link]", "green")
-        timeline.add("⚡ Post-Deploy Validation trigger fired → deployment-validator", "yellow bold")
+        timeline.add("⏳ Watching SRE Agent for Post-Deploy Validation pickup...", "dim")
 
     # Phase tracking flags
     phases = {
@@ -998,7 +998,7 @@ def scenario_crash():
     build_info = run_build_release("crash", "outage-api")
     if not build_info:
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⏳ Watching SRE Agent for Post-Deploy Validation pickup...[/]\n")
     time.sleep(1)
 
     if monitor_deployment_e2e(OUTAGE_API_URL, "/outages", "outage-api",
@@ -1048,7 +1048,7 @@ def scenario_perf():
     build_info = run_build_release("perf", "grid-status-api")
     if not build_info:
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⏳ Watching SRE Agent for Post-Deploy Validation pickup...[/]\n")
     time.sleep(1)
 
     if monitor_deployment_e2e(GRID_API_URL, "/regions", "grid-status-api",
@@ -1092,7 +1092,7 @@ def scenario_config():
     build_info = run_build_release("config", "notification-svc")
     if not build_info:
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⏳ Watching SRE Agent for Post-Deploy Validation pickup...[/]\n")
     time.sleep(1)
 
     if monitor_deployment_e2e(NOTIFY_URL, "/send", "notification-svc",
@@ -1626,7 +1626,25 @@ def scenario_build_failure():
 
     if result == "failed":
         console.print("[red bold]  ✗ BUILD FAILED — as expected![/]\n")
-        console.print("[bold yellow]  ⚡ Build failure trigger fired → incident-handler reading logs[/]\n")
+        console.print("[bold yellow]  ⏳ Watching SRE Agent for incident-handler pickup...[/]\n")
+        # Poll srectl for the agent thread so we can show a real link
+        sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        deadline = time.time() + 120
+        thread_url = None
+        while time.time() < deadline:
+            found, thread_id = poll_agent_thread("build", sim_start)
+            if not found:
+                found, thread_id = poll_agent_thread("outage-api", sim_start)
+            if found:
+                if thread_id:
+                    thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
+                    console.print(f"[bold yellow]  🤖 incident-handler picked up — [link={thread_url}]view thread[/link][/]\n")
+                else:
+                    console.print("[bold yellow]  🤖 incident-handler picked up — investigating[/]\n")
+                break
+            time.sleep(10)
+        else:
+            console.print("[dim]  (no agent thread detected within 2 min — check sre.azure.com manually)[/]\n")
         time.sleep(2)
     else:
         console.print(f"[yellow]  Build result: {result} (expected failure)[/]\n")
@@ -1841,6 +1859,87 @@ def scenario_servicenow():
                 time.sleep(3)
     except KeyboardInterrupt:
         pass
+
+# ═══════════════════════════════════════════════════════════
+#  SCENARIO 9 — One Replica Unresponsive (PPL-2)
+# ═══════════════════════════════════════════════════════════
+def scenario_replica_down():
+    show_backstory("🩺", "ONE REPLICA UNRESPONSIVE — 1 of 6 servers",
+        "grid-status-api runs across 6 ACA replicas behind a built-in\n"
+        "load balancer (analogous to 6 application servers behind an LB).\n"
+        "Overnight, one replica's in-process state drifted into a degraded\n"
+        "mode (think: thread deadlock, GC pause, or memory pressure on a\n"
+        "single JVM). It still answers the readiness probe but takes 8s+\n"
+        "for /regions calls — yet the LB keeps sending it ~1 in 6 requests.\n\n"
+        "From outside: the service is mostly fast, occasionally agonizingly\n"
+        "slow. Customers see intermittent timeouts on the operations portal.",
+
+        "1. We scale grid-status-api to exactly 6 replicas (PPL-style fleet)\n"
+        "2. We POST /chaos/latency once → only 1 replica accepts it\n"
+        "3. The other 5 stay normal; that 1 replica adds 8s to every request\n"
+        "4. /regions latency becomes bimodal (most fast, ~17% slow)\n"
+        "5. high-latency alert fires → SRE Agent investigates autonomously\n"
+        "6. Agent identifies the bad replica + remediates (restart revision)")
+
+    if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)],
+                           needs_token=True):
+        console.input("[dim]  Press Enter...[/]"); return
+
+    rg = RESOURCE_GROUP
+    sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # ── Scale to exactly 6 replicas ──
+    console.print("[bold cyan]  ▶ Scaling grid-status-api to 6 replicas...[/]")
+    ok, _o, err = run_az(
+        ["az", "containerapp", "update",
+         "-n", f"ca-{WORKLOAD}-grid", "-g", rg,
+         "--min-replicas", "6", "--max-replicas", "6", "--output", "none"],
+        timeout=120, retries=1)
+    if not ok:
+        console.print(f"[red]  ✗ scale failed: {err[:80]}[/]")
+        console.input("[dim]  Press Enter...[/]"); return
+    console.print("[green]  ✓ scaled to 6 replicas[/]\n")
+
+    # Give ACA a moment to actually have 6 replicas warm
+    console.print("[dim]  Waiting for replicas to warm up (~30s)...[/]")
+    time.sleep(30)
+
+    # ── Inject latency into ONE replica (whichever serves the POST) ──
+    console.print("[bold cyan]  ▶ Injecting 8000ms latency into one replica...[/]")
+    try:
+        r = requests.post(f"{GRID_API_URL}/chaos/latency",
+                          json={"latency_ms": 8000, "duration_min": 15},
+                          timeout=10)
+        if r.status_code == 200:
+            console.print("[green]  ✓ chaos enabled on 1 replica[/] [dim]"
+                          "(only the replica that received this POST)[/]\n")
+        else:
+            console.print(f"[red]  ✗ chaos failed: {r.status_code}[/]")
+            console.input("[dim]  Press Enter...[/]"); return
+    except Exception as e:
+        console.print(f"[red]  ✗ {str(e)[:80]}[/]")
+        console.input("[dim]  Press Enter...[/]"); return
+
+    console.print("[bold yellow]  ⚡ The bad replica is now slow — "
+                  "expect ~17% of requests to be slow[/]\n")
+    time.sleep(2)
+
+    # Reuse rich monitor — bimodal latency means avg eventually fires high-latency alert
+    if monitor_health(GRID_API_URL, "/regions", "grid-status-api",
+                      "incident-handler",
+                      healthy_fn=lambda c, ms: c == 200 and ms < 1500,
+                      ok_label="FAST", bad_label="SLOW",
+                      alert_name="high-latency"):
+        show_result("🎉", "BAD REPLICA REMEDIATED!", [
+            "SRE Agent (incident-handler):",
+            "- Detected bimodal latency distribution",
+            "- Identified 1 replica adding ~8s on every request",
+            "- Remediation: restarted ACA revision (rolls bad replica)",
+            "- Verified: latency back to normal across all 6 replicas",
+            "",
+            "RCA pattern — one node degraded (deadlock / GC pause / memory).",
+            "Reset (option 8) restores replica count and clears chaos.",
+        ])
 
 # ═══════════════════════════════════════════════════════════
 #  SCENARIO 8 — Reset All (Healthy Baseline)
@@ -2200,6 +2299,7 @@ MENU_ITEMS = """
   [bold cyan]6.[/]  🔨  Pipeline Build Failure
   [bold cyan]7.[/]  🎫  ServiceNow Laptop Replacement
   [bold cyan]8.[/]  🧹  Reset All (Healthy Baseline)
+  [bold cyan]9.[/]  🩺  One Replica Unresponsive (1 of 6)
   [bold cyan]Q.[/]  🚪  Quit
 """
 
@@ -2221,6 +2321,7 @@ def main():
             "1": scenario_crash, "2": scenario_perf, "3": scenario_config,
             "4": scenario_disk, "5": scenario_load, "6": scenario_build_failure,
             "7": scenario_servicenow, "8": scenario_reset,
+            "9": scenario_replica_down,
         }
         fn = scenarios.get(sys.argv[2])
         if fn:
@@ -2238,6 +2339,7 @@ def main():
         "6": "scenario_build_failure",
         "7": "scenario_servicenow",
         "8": "scenario_reset",
+        "9": "scenario_replica_down",
     }
     scenario_names = {
         "1": "Bad Deployment — App Crash",
@@ -2248,11 +2350,12 @@ def main():
         "6": "Pipeline Build Failure",
         "7": "ServiceNow Laptop Replacement",
         "8": "Reset All",
+        "9": "One Replica Unresponsive",
     }
     while True:
         show_menu()
         choice = console.input(
-            "[bold cyan]  Select scenario (1-8, Q): [/]").strip().lower()
+            "[bold cyan]  Select scenario (1-9, Q): [/]").strip().lower()
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
