@@ -59,11 +59,22 @@ Use LookupServiceNowIncident to:
 Note: Native ServiceNow tools now accept INC numbers directly — no sys_id translation needed.
 
 ### Attaching a Metrics Chart
-Use UploadChartToServiceNow to generate and attach a chart to the incident:
+Use UploadChartToServiceNow to generate a chart and (a) attach it to the
+incident AND (b) get an inline image you can render in the SRE Agent
+thread:
 1. Pass the incident number and a KQL query that returns time-series data
-2. The tool runs the query, generates the chart (matplotlib), and uploads to SNOW automatically
-3. Use a descriptive chart_title (e.g. "Disk Usage During Incident" or "Request Latency Spike")
-4. Add a work note referencing the attachment: "Metrics chart attached — shows [description]"
+2. The tool runs the query, plots with matplotlib, uploads the PNG to
+   SNOW (Attachments tab), AND returns:
+   - `snow_attachments_url` — link to the SNOW incident's attachments
+   - `markdown` — a ready-to-paste `![title](data:image/png;base64,...)`
+     string that renders the chart inline in the SRE Agent thread
+3. Use a descriptive chart_title (e.g. "Disk Usage During Incident" or
+   "Request Latency Spike")
+4. **MANDATORY**: include the returned `markdown` field VERBATIM in your
+   next assistant reply so the chart is visible in the thread. Then add
+   a work note referencing the SNOW attachment:
+   `UpdateServiceNowWorkNotes("Metrics chart attached — see Attachments
+   tab. Inline preview rendered in SRE Agent thread.")`
 Example KQL: requests | where timestamp > ago(30m) | summarize avg(duration), count() by bin(timestamp, 1m)
 
 # ServiceNow Incident Report Template
