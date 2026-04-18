@@ -3021,8 +3021,20 @@ def show_menu():
 
 # ── Main ────────────────────────────────────────────────────
 def main():
+    args = sys.argv[1:]
+
+    # --no-input / --yes: auto-answer every console.input() prompt with
+    # empty string (i.e. "press Enter" / decline y/N / accept defaults).
+    # Allows unattended e2e testing of scenarios from CI or pipes.
+    if "--no-input" in args or "--yes" in args:
+        def _auto_input(prompt="", *_, **__):
+            console.print(prompt + "[dim](auto)[/]")
+            return ""
+        console.input = _auto_input
+        args = [a for a in args if a not in ("--no-input", "--yes")]
+
     # If launched with --scenario, run that scenario directly (used by new-window launch)
-    if len(sys.argv) >= 3 and sys.argv[1] == "--scenario":
+    if len(args) >= 2 and args[0] == "--scenario":
         scenarios = {
             "1":  scenario_disk,
             "2":  scenario_replica_down,
@@ -3035,7 +3047,7 @@ def main():
             "9":  scenario_servicenow,
             "10": scenario_reset,
         }
-        fn = scenarios.get(sys.argv[2])
+        fn = scenarios.get(args[1])
         if fn:
             fn()
             console.input("\n[dim]  Press Enter to close this window...[/]")
