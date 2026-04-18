@@ -787,6 +787,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
     rebuild_url = None
     redeploy_id = None
     redeploy_url = None
+    agent_thread_url = None
     new_release_seen_at = None  # when the rebuild→release chain produces new release
 
     checks = []
@@ -859,16 +860,28 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                         timeline.add("🚨 Azure Monitor alert FIRED", "red bold")
 
             # ---- agent thread detection ----
+            # Threads are titled e.g. "Pipeline Release Success: PowerGrid-Release (Run #26)"
+            # or "<service>: ..." — try both the release id AND the service name.
             if not agent_started and (now - last_agent_poll).seconds >= 10:
                 last_agent_poll = now
-                found, thread_id = poll_agent_thread(service_name, sim_start)
+                thread_id = None
+                found = False
+                if build_info and build_info.get("release_id"):
+                    found, thread_id = poll_agent_thread(
+                        f"Run #{build_info['release_id']}", sim_start)
+                    if not found:
+                        found, thread_id = poll_agent_thread(
+                            "PowerGrid-Release", sim_start)
+                if not found:
+                    found, thread_id = poll_agent_thread(service_name, sim_start)
                 if found:
                     agent_started = True
                     if thread_id:
-                        thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
-                        timeline.add(f"🤖 deployment-validator picked up — [link={thread_url}]view thread[/link]", "yellow bold")
+                        agent_thread_url = f"{SRE_AGENT_THREAD_BASE}/{thread_id}"
+                        timeline.add(f"🤖 deployment-validator picked up — [link={agent_thread_url}]view thread[/link]", "yellow bold")
                     else:
-                        timeline.add("🤖 deployment-validator picked up — investigating", "yellow bold")
+                        agent_thread_url = SRE_AGENT_THREAD_BASE
+                        timeline.add(f"🤖 deployment-validator picked up — [link={agent_thread_url}]open SRE Agent[/link]", "yellow bold")
 
             # ---- SNOW INC detection ----
             if not phases["snow"] and (now - last_snow_poll).seconds >= 15:
