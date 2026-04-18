@@ -737,7 +737,7 @@ def poll_pipeline(run_id, label):
     last_poll = 0
     status, result = "queued", ""
 
-    with Live(console=console, refresh_per_second=4) as live:
+    with Live(console=console, refresh_per_second=4, vertical_overflow="visible") as live:
         while True:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -979,7 +979,7 @@ def monitor_health(url, path, service_name, agent_name,
     healthy_baseline_ms = None
     baseline_samples = []
 
-    with Live(console=console, refresh_per_second=2) as live:
+    with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
         while not recovered:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -1243,7 +1243,7 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
             bits.append(f"{mark} [{color}]{name}[/]")
         return "  " + "  →  ".join(bits)
 
-    with Live(console=console, refresh_per_second=2) as live:
+    with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
         while not overall_done:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -1823,7 +1823,7 @@ def scenario_disk():
     healthy_baseline_pct = None
     consecutive_ok = 0
 
-    with Live(console=console, refresh_per_second=1) as live:
+    with Live(console=console, refresh_per_second=1, vertical_overflow="visible") as live:
         while not recovered:
             key = check_key()
             if key in (b"q", b"Q"):
@@ -2181,7 +2181,7 @@ def scenario_load():
     SRE_TRIGGER_URL = "https://sre-zavapower-ops--5a379588.bc75887b.eastus2.azuresre.ai/api/v1/httptriggers/trigger/9a276c65-c2ed-4e6e-b478-07e79a85a495"
 
     try:
-        with Live(console=console, refresh_per_second=2) as live:
+        with Live(console=console, refresh_per_second=2, vertical_overflow="visible") as live:
             while True:
                 key = check_key()
                 if key in (b"q", b"Q"):
@@ -2547,7 +2547,7 @@ def scenario_servicenow():
 
     # Live poll until resolved
     try:
-        with Live(console=console, refresh_per_second=1) as live:
+        with Live(console=console, refresh_per_second=1, vertical_overflow="visible") as live:
             while True:
                 key = check_key()
                 if key in (b"q", b"Q"):
