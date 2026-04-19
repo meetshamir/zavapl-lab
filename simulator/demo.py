@@ -3222,13 +3222,13 @@ def _system_status_panel():
 
 # ── Menu ────────────────────────────────────────────────────
 MENU_ITEMS = """
-  [bold yellow]── CORE SCENARIOS ──[/]
+  [bold yellow]── CORE SCENARIOS ──[/]   [dim](press [bold]A[/] to run all 3 in parallel windows)[/]
   [bold cyan]1.[/]  💾  Disk Pressure (VM Alert)
-  [bold cyan]2.[/]  🩺  One App Server Unresponsive (1 of 6)
   [bold cyan]3.[/]  🐌  Slow Response After Microservice Upgrade
   [bold cyan]4.[/]  🔬  Pod Health Audit (Scheduled Task — proactive)
 
   [bold yellow]── BONUS SCENARIOS ──[/]
+  [bold cyan]2.[/]  🩺  One App Server Unresponsive (1 of 6)
   [bold cyan]5.[/]  💥  Bad Deployment — App Crash (SCADA Bug)
   [bold cyan]6.[/]  🔌  Bad Deployment — Config Error (Wrong Port)
   [bold cyan]7.[/]  📈  Organic Load Spike (No Bug)
@@ -3314,10 +3314,25 @@ def main():
     while True:
         show_menu()
         choice = console.input(
-            "[bold cyan]  Select scenario (1-10, R, Q): [/]").strip().lower()
+            "[bold cyan]  Select scenario (1-10, A=run all core, R, Q): [/]").strip().lower()
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
+        if choice == "a":
+            # Launch all 3 CORE scenarios in parallel windows
+            core = [("1", "Disk Pressure"),
+                    ("3", "Slow Response After Upgrade"),
+                    ("4", "Pod Health Audit (ST)")]
+            console.print("[bold cyan]  Launching all 3 core scenarios in parallel...[/]")
+            script_path = os.path.abspath(__file__)
+            for cid, cname in core:
+                subprocess.Popen(
+                    f'start "PowerGrid — {cname}" cmd /k python "{script_path}" --scenario {cid}',
+                    shell=True
+                )
+                time.sleep(1)
+            time.sleep(1)
+            continue
         if choice in scenarios:
             name = scenario_names[choice]
             console.print(f"[bold cyan]  Opening '{name}' in new window...[/]")
