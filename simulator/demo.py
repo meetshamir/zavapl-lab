@@ -3224,11 +3224,11 @@ def _system_status_panel():
 MENU_ITEMS = """
   [bold yellow]── CORE SCENARIOS ──[/]   [dim](press [bold]A[/] to run all 3 in parallel windows)[/]
   [bold cyan]1.[/]  💾  Disk Pressure (VM Alert)
-  [bold cyan]3.[/]  🐌  Slow Response After Microservice Upgrade
-  [bold cyan]4.[/]  🔬  Pod Health Audit (Scheduled Task — proactive)
+  [bold cyan]2.[/]  🐌  Slow Response After Microservice Upgrade
+  [bold cyan]3.[/]  🔬  Pod Health Audit (Scheduled Task — proactive)
 
   [bold yellow]── BONUS SCENARIOS ──[/]
-  [bold cyan]2.[/]  🩺  One App Server Unresponsive (1 of 6)
+  [bold cyan]4.[/]  🩺  One App Server Unresponsive (1 of 6)
   [bold cyan]5.[/]  💥  Bad Deployment — App Crash (SCADA Bug)
   [bold cyan]6.[/]  🔌  Bad Deployment — Config Error (Wrong Port)
   [bold cyan]7.[/]  📈  Organic Load Spike (No Bug)
@@ -3267,9 +3267,9 @@ def main():
     if len(args) >= 2 and args[0] == "--scenario":
         scenarios = {
             "1":  scenario_disk,
-            "2":  scenario_replica_down,
-            "3":  scenario_perf,
-            "4":  scenario_pod_audit,
+            "2":  scenario_perf,
+            "3":  scenario_pod_audit,
+            "4":  scenario_replica_down,
             "5":  scenario_crash,
             "6":  scenario_config,
             "7":  scenario_load,
@@ -3287,9 +3287,9 @@ def main():
     # Main menu — launches scenarios in new terminal windows
     scenarios = {
         "1":  "scenario_disk",
-        "2":  "scenario_replica_down",
-        "3":  "scenario_perf",
-        "4":  "scenario_pod_audit",
+        "2":  "scenario_perf",
+        "3":  "scenario_pod_audit",
+        "4":  "scenario_replica_down",
         "5":  "scenario_crash",
         "6":  "scenario_config",
         "7":  "scenario_load",
@@ -3300,9 +3300,9 @@ def main():
     }
     scenario_names = {
         "1":  "Disk Pressure",
-        "2":  "One Replica Unresponsive",
-        "3":  "Slow Response After Upgrade",
-        "4":  "Pod Health Audit (ST)",
+        "2":  "Slow Response After Upgrade",
+        "3":  "Pod Health Audit (ST)",
+        "4":  "One Replica Unresponsive",
         "5":  "Bonus — Bad Deployment App Crash",
         "6":  "Bonus — Bad Deployment Config Error",
         "7":  "Bonus — Organic Load Spike",
@@ -3321,8 +3321,8 @@ def main():
         if choice == "a":
             # Launch all 3 CORE scenarios in parallel windows
             core = [("1", "Disk Pressure"),
-                    ("3", "Slow Response After Upgrade"),
-                    ("4", "Pod Health Audit (ST)")]
+                    ("2", "Slow Response After Upgrade"),
+                    ("3", "Pod Health Audit (ST)")]
             console.print("[bold cyan]  Launching all 3 core scenarios in parallel...[/]")
             script_path = os.path.abspath(__file__)
             for cid, cname in core:
