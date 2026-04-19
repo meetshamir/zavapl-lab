@@ -3236,7 +3236,7 @@ MENU_ITEMS = """
   [bold cyan]9.[/]  🎫  ServiceNow Laptop Replacement
 
   [bold yellow]── UTILITIES ──[/]
-  [bold cyan]10.[/] 🧹  Reset All (Healthy Baseline)
+  [bold cyan]10.[/] 🧹  Reset All (Healthy Baseline)   [dim](or press [bold]R[/])[/]
   [bold cyan]Q.[/]  🚪  Quit
 """
 
@@ -3276,8 +3276,9 @@ def main():
             "8":  scenario_build_failure,
             "9":  scenario_servicenow,
             "10": scenario_reset,
+            "r":  scenario_reset,
         }
-        fn = scenarios.get(args[1])
+        fn = scenarios.get(args[1].lower())
         if fn:
             fn()
             console.input("\n[dim]  Press Enter to close this window...[/]")
@@ -3295,6 +3296,7 @@ def main():
         "8":  "scenario_build_failure",
         "9":  "scenario_servicenow",
         "10": "scenario_reset",
+        "r":  "scenario_reset",
     }
     scenario_names = {
         "1":  "Disk Pressure",
@@ -3307,11 +3309,12 @@ def main():
         "8":  "Bonus — Pipeline Build Failure",
         "9":  "Bonus — ServiceNow Laptop Replacement",
         "10": "Reset All",
+        "r":  "Reset All",
     }
     while True:
         show_menu()
         choice = console.input(
-            "[bold cyan]  Select scenario (1-10, Q): [/]").strip().lower()
+            "[bold cyan]  Select scenario (1-10, R, Q): [/]").strip().lower()
         if choice == "q":
             console.print("[bold]  Goodbye! ⚡[/]")
             break
