@@ -587,30 +587,44 @@ class EventTimeline:
         self.events = []
         self.start = datetime.now()
 
-    def add(self, text, style="white"):
+    def add(self, text, style="white", when=None):
+        """Add an event. `when` overrides the default 'now' timestamp — pass a
+        datetime to backfill events that happened earlier (build/release etc)."""
+        ts = when if isinstance(when, datetime) else datetime.now()
+        # If we're backfilling an event that happened *before* the timeline
+        # was created, anchor `start` to the earliest event so Δ stays >= 0.
+        if ts < self.start:
+            self.start = ts
         self.events.append({
-            "ts": datetime.now().strftime("%H:%M:%S"),
-            "elapsed": f"+{(datetime.now() - self.start).seconds}s",
+            "ts": ts.strftime("%H:%M:%S"),
+            "elapsed": f"+{int((ts - self.start).total_seconds())}s",
             "text": text, "style": style,
+            "_dt": ts,
         })
+        # Keep events ordered by real time so backfilled events render
+        # in the correct position (not appended at the end).
+        self.events.sort(key=lambda e: e["_dt"])
+        # Recompute Δ in case `start` shifted or order changed.
+        for e in self.events:
+            e["elapsed"] = f"+{int((e['_dt'] - self.start).total_seconds())}s"
 
     def render(self):
         t = Table(title="[bold]Event Timeline[/]", box=box.ROUNDED,
-                  border_style="blue", width=68)
-        t.add_column("Time", style="dim", width=9)
-        t.add_column("Δ", style="dim", width=6)
+                  border_style="blue", width=72)
+        t.add_column("Time", style="dim", width=10, no_wrap=True)
+        t.add_column("Δ", style="dim", width=6, no_wrap=True)
         t.add_column("Event", width=48)
-        for e in self.events[-6:]:
+        for e in self.events[-10:]:
             t.add_row(e["ts"], e["elapsed"], f"[{e['style']}]{e['text']}[/]")
         return t
 
-    def render_full(self, title="Event Timeline (full)", width=92):
-        """All events, not just the last 6 — used in post-incident snapshot."""
+    def render_full(self, title="Event Timeline (full)", width=96):
+        """All events, not just the last 10 — used in post-incident snapshot."""
         t = Table(title=f"[bold]{title}[/]", box=box.ROUNDED,
                   border_style="blue", width=width)
-        t.add_column("Time", style="dim", width=9)
-        t.add_column("Δ", style="dim", width=6)
-        t.add_column("Event", width=max(20, width - 22))
+        t.add_column("Time", style="dim", width=10, no_wrap=True)
+        t.add_column("Δ", style="dim", width=6, no_wrap=True)
+        t.add_column("Event", width=max(20, width - 24))
         for e in self.events:
             t.add_row(e["ts"], e["elapsed"], f"[{e['style']}]{e['text']}[/]")
         return t
@@ -826,6 +840,7 @@ def run_build_release(failure_scenario, services):
             pass
 
     console.print("\n[bold cyan]  ▶ Triggering PowerGrid-Build...[/]")
+    build_started_at = datetime.now()
     build_id = run_ado_pipeline("PowerGrid-Build", {
         "failure_scenario": failure_scenario, "services": services,
     })
@@ -841,8 +856,10 @@ def run_build_release(failure_scenario, services):
         console.print(f"[red]  ✗ Build {r}[/]")
         console.input("[dim]  Press Enter...[/]"); return None
 
+    build_succeeded_at = datetime.now()
     console.print("[green]  ✓ Build succeeded![/]\n")
     console.print("[bold cyan]  ▶ Triggering PowerGrid-Release...[/]")
+    release_started_at = datetime.now()
     release_id = run_ado_pipeline("PowerGrid-Release")
     if not release_id:
         console.input("[dim]  Press Enter...[/]"); return None
@@ -856,11 +873,16 @@ def run_build_release(failure_scenario, services):
         console.print(f"[red]  ✗ Release {r}[/]")
         console.input("[dim]  Press Enter...[/]"); return None
 
+    release_succeeded_at = datetime.now()
     console.print("[green]  ✓ Release succeeded![/]\n")
     return {
         "build_id": build_id, "release_id": release_id,
         "build_url": build_url, "release_url": release_url,
         "sim_start": sim_start,
+        "build_started_at": build_started_at,
+        "build_succeeded_at": build_succeeded_at,
+        "release_started_at": release_started_at,
+        "release_succeeded_at": release_succeeded_at,
         "pre_revisions": pre_revisions,
     }
 
@@ -1180,14 +1202,34 @@ def monitor_deployment_e2e(url, path, service_name, healthy_fn=None,
                 datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
 
-    # Pre-seed timeline with Phase 0/1 (pipelines)
+    # Pre-seed timeline with Phase 0/1 (pipelines) using REAL timestamps
+    # captured during the build/release flow, so Δ values reflect actual
+    # elapsed time instead of all collapsing to +0s.
     if build_info:
-        timeline.add(
-            f"🔨 Build #{build_info['build_id']} succeeded — "
-            f"[link={build_info['build_url']}]view[/link]", "green")
-        timeline.add(
-            f"🚀 Release #{build_info['release_id']} deployed — "
-            f"[link={build_info['release_url']}]view[/link]", "green")
+        b_start = build_info.get("build_started_at")
+        b_end   = build_info.get("build_succeeded_at")
+        r_start = build_info.get("release_started_at")
+        r_end   = build_info.get("release_succeeded_at")
+        if b_start:
+            timeline.add(
+                f"🔨 Build #{build_info['build_id']} started — "
+                f"[link={build_info['build_url']}]view[/link]",
+                "cyan", when=b_start)
+        if b_end:
+            timeline.add(
+                f"🔨 Build #{build_info['build_id']} succeeded — "
+                f"[link={build_info['build_url']}]view[/link]",
+                "green", when=b_end)
+        if r_start:
+            timeline.add(
+                f"🚀 Release #{build_info['release_id']} started — "
+                f"[link={build_info['release_url']}]view[/link]",
+                "cyan", when=r_start)
+        if r_end:
+            timeline.add(
+                f"🚀 Release #{build_info['release_id']} deployed — "
+                f"[link={build_info['release_url']}]view[/link]",
+                "green", when=r_end)
         timeline.add("⏳ Watching SRE Agent for Post-Deploy Validation pickup...", "dim")
 
     # Phase tracking flags
