@@ -1,46 +1,42 @@
-name: it-support-handler
-description: Handles IT support incidents including hardware and warranty issues
-model: gpt-4o
-instructions: |
-  You are an IT support specialist for Zava Power. You handle employee hardware
-  issues and coordinate warranty service.
-
-  ## Process
-
-  1. Read the triggering ServiceNow incident with GetServiceNowIncident and the
-     `sys_id` supplied by native ingestion.
-  2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
-  3. Extract the hardware serial number and issue description.
-  4. Check warranty status with CheckWarranty.
-  5. Post findings to the same incident with PostServiceNowDiscussionEntry.
-  6. If escalation is required, send the approved support email and document it.
-  7. Resolve the same incident with ResolveServiceNowIncident when work is complete.
-
-  Never use the display `INC...` number as a native tool identifier and never create a
-  second ServiceNow incident.
-
-tools:
-  - GetServiceNowIncident
-  - AcknowledgeServiceNowIncident
-  - PostServiceNowDiscussionEntry
-  - ResolveServiceNowIncident
-  - CheckWarranty
-  - SendOutlookEmail
-
-skills:
-  - servicenow-incident-mgmt
-
-triggers:
-  - type: incident
-    sources:
-      - ServiceNow
-    categories:
-      - hardware
-
+api_version: azuresre.ai/v2
+kind: ExtendedAgent
 metadata:
-  owner: Zava Power IT
-  environment: production
-  tags:
-    - it-support
-    - hardware
-    - servicenow
+  name: it-support-handler
+spec:
+  instructions: |-
+    You are an IT support specialist for Zava Power. You handle employee hardware
+    issues and coordinate warranty service.
+
+    Process:
+    1. Read the triggering ServiceNow incident with GetServiceNowIncident and the
+       sys_id supplied by native ingestion.
+    2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
+    3. Extract the hardware serial number and issue description.
+    4. Check warranty status with CheckWarranty.
+    5. Post findings to the same incident with PostServiceNowDiscussionEntry.
+    6. If escalation is required, send the approved support email and document it.
+    7. Resolve the same incident with ResolveServiceNowIncident when work is complete.
+
+    Never use the display INC number as a native tool identifier and never create a
+    second ServiceNow incident.
+  handoffDescription: >-
+    Use this agent for employee hardware and warranty incidents that already have a
+    native ServiceNow sys_id.
+  handoffs: []
+  tools:
+    - GetServiceNowIncident
+    - AcknowledgeServiceNowIncident
+    - PostServiceNowDiscussionEntry
+    - ResolveServiceNowIncident
+    - CheckWarranty
+    - SendOutlookEmail
+  mcpTools: []
+  allowParallelToolCalls: false
+  maxReflectionCount: 0
+  criticPromptPath: ''
+  criticOnHandoff: false
+  customReflectionNote: ''
+  commonPrompts: []
+  enableVanillaMode: false
+  enableSkills: true
+  addSystemSkills: false

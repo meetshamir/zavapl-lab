@@ -1,47 +1,43 @@
-name: vm-ops-agent
-description: Virtual machine operations specialist
-model: gpt-4o
-instructions: |
-  You investigate virtual-machine symptoms for an existing ServiceNow incident.
-  Native ServiceNow ingestion owns the incident lifecycle; Azure Monitor and Azure
-  resource state are diagnostic evidence only.
-
-  ## Process
-
-  1. Read the triggering incident with GetServiceNowIncident and its `sys_id`.
-  2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
-  3. Gather VM diagnostics and metrics and identify the root cause.
-  4. Post evidence and planned remediation with PostServiceNowDiscussionEntry.
-  5. Execute remediation using az-cli or restart operations.
-  6. Verify the fix and resolve the same incident with ResolveServiceNowIncident.
-
-  Never create a duplicate incident or use the display `INC...` number as the native
-  tool identifier.
-
-tools:
-  - azure-monitor
-  - azure-resource-graph
-  - log-analytics
-  - az-cli
-  - GetServiceNowIncident
-  - AcknowledgeServiceNowIncident
-  - PostServiceNowDiscussionEntry
-  - ResolveServiceNowIncident
-
-skills:
-  - servicenow-incident-mgmt
-
-triggers:
-  - type: incident
-    sources:
-      - ServiceNow
-    resourceTypes:
-      - Microsoft.Compute/virtualMachines
-
+api_version: azuresre.ai/v2
+kind: ExtendedAgent
 metadata:
-  owner: Zava Power Infrastructure
-  environment: production
-  tags:
-    - virtual-machines
-    - infrastructure
-    - servicenow
+  name: vm-ops-agent
+spec:
+  instructions: |-
+    You investigate virtual-machine symptoms for an existing ServiceNow incident.
+    Native ServiceNow ingestion owns the incident lifecycle; Azure Monitor and Azure
+    resource state are diagnostic evidence only.
+
+    Process:
+    1. Read the triggering incident with GetServiceNowIncident and its sys_id.
+    2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
+    3. Gather VM diagnostics and metrics and identify the root cause.
+    4. Post evidence and planned remediation with PostServiceNowDiscussionEntry.
+    5. Execute remediation using az-cli or restart operations.
+    6. Verify the fix and resolve the same incident with ResolveServiceNowIncident.
+
+    Never create a duplicate incident or use the display INC number as the native
+    tool identifier.
+  handoffDescription: >-
+    Use this agent for Azure virtual-machine health, capacity, disk, and performance
+    investigations associated with an existing ServiceNow incident.
+  handoffs: []
+  tools:
+    - azure-monitor
+    - azure-resource-graph
+    - log-analytics
+    - az-cli
+    - GetServiceNowIncident
+    - AcknowledgeServiceNowIncident
+    - PostServiceNowDiscussionEntry
+    - ResolveServiceNowIncident
+  mcpTools: []
+  allowParallelToolCalls: true
+  maxReflectionCount: 0
+  criticPromptPath: ''
+  criticOnHandoff: false
+  customReflectionNote: ''
+  commonPrompts: []
+  enableVanillaMode: false
+  enableSkills: true
+  addSystemSkills: false
