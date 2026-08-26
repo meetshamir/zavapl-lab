@@ -9,7 +9,7 @@ param vmSize string = 'Standard_B2ms'
 param adminUsername string = 'azureuser'
 
 @secure()
-param adminPassword string = 'P@ssw0rd${uniqueString(resourceGroup().id)}!'
+param adminPassword string
 
 // ── Network ──
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {

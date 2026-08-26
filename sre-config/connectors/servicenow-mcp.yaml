@@ -1,46 +1,28 @@
-# ─────────────────────────────────────────────────────────────
-# ServiceNow Integration — Using Native SRE Agent Tools
-# ─────────────────────────────────────────────────────────────
+# Native ServiceNow incident-platform configuration
 #
-# SRE Agent has BUILT-IN ServiceNow tools when you connect
-# ServiceNow as the Incident Platform. No MCP needed.
+# This file is guidance only; the connection is authorized and saved in the
+# Azure SRE Agent portal. It is not an MCP server or a credential manifest.
 #
-# Native tools available automatically:
-#   - GetServiceNowIncident (requires sys_id)
-#   - PostServiceNowDiscussionEntry (add work notes)
-#   - AcknowledgeServiceNowIncident
-#   - ResolveServiceNowIncident
+# Instance:
+#   https://dev442167.service-now.com
 #
-# Custom Python tool needed (see LookupServiceNowIncident below):
-#   - LookupServiceNowIncident (translates INC number → sys_id)
+# Source:
+#   Native ServiceNow incident ingestion, filtered to the Zava Power SRE
+#   assignment group.
 #
-# SETUP:
-#   1. Connect ServiceNow as Incident Platform:
-#      sre.azure.com → Agent → Builder → Incidents → Connect platform
-#      → ServiceNow → Enter instance URL + credentials
+# Lifecycle tools:
+#   GetServiceNowIncident
+#   AcknowledgeServiceNowIncident
+#   PostServiceNowDiscussionEntry
+#   ResolveServiceNowIncident
 #
-#   2. Upload the LookupServiceNowIncident Python tool:
-#      Builder → Tools → + Add tool → Python
-#      (see sre-config/tools/LookupServiceNowIncident.yaml)
+# Identifier:
+#   Pass the triggering incident sys_id to every native action. INC numbers are
+#   display-only.
 #
-#   3. The native SNOW tools become available to all subagents
-#      once the Incident Platform is connected
+# Authentication:
+#   Use the mode exposed by the SRE Agent tenant. Keep simulator OAuth client
+#   credentials in local environment variables; never store them here.
 #
-# Instance: https://dev268981.service-now.com
-# ─────────────────────────────────────────────────────────────
-
-# This is NOT an MCP connector config — it documents the native
-# ServiceNow integration used in this lab.
-#
-# The native integration:
-#   - INBOUND: Agent polls SNOW for new/updated incidents (every 60s)
-#   - OUTBOUND: Agent uses native tools to update/resolve tickets
-#   - Agent can also create discussion entries (work notes)
-#
-# Combined with Azure Monitor alerts:
-#   - Monitor alert → Response Plan triggers investigation
-#   - Agent creates SNOW incident via LookupServiceNowIncident
-#     (or SNOW incident already exists from monitoring webhook)
-#   - Agent documents investigation in SNOW discussion entries
-#   - Agent resolves SNOW incident when fix is validated
-
+# Setup:
+#   See docs/SERVICENOW-SETUP.md.

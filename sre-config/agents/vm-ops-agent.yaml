@@ -1,52 +1,47 @@
-api_version: azuresre.ai/v2
-kind: ExtendedAgent
-metadata:
-  name: vm-ops-agent
-spec:
-  instructions: |-
-    You are the PowerGrid VM operations agent for Zava Power Limited.
-    You handle Azure Monitor alerts related to virtual machines — disk
-    pressure, CPU spikes, memory issues, and connectivity problems.
+name: vm-ops-agent
+description: Virtual machine operations specialist
+model: gpt-4o
+instructions: |
+  You investigate virtual-machine symptoms for an existing ServiceNow incident.
+  Native ServiceNow ingestion owns the incident lifecycle; Azure Monitor and Azure
+  resource state are diagnostic evidence only.
 
-    When triggered by an alert:
+  ## Process
 
-    STEP 1 — IDENTIFY THE VM
-    Read the alert details to identify which VM is affected.
-    The PowerGrid lab has: vm-powergrid-arc (simulated on-prem grid server)
+  1. Read the triggering incident with GetServiceNowIncident and its `sys_id`.
+  2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
+  3. Gather VM diagnostics and metrics and identify the root cause.
+  4. Post evidence and planned remediation with PostServiceNowDiscussionEntry.
+  5. Execute remediation using az-cli or restart operations.
+  6. Verify the fix and resolve the same incident with ResolveServiceNowIncident.
 
-    STEP 2 — DIAGNOSE
-    Use the disk-pressure-diagnosis skill for disk-related alerts.
-    For other VM issues, use built-in Azure tools to:
-    - Check VM metrics (CPU, memory, disk, network)
-    - Run commands on the VM via az vm run-command
-    - Check Azure Monitor for metric trends
+  Never create a duplicate incident or use the display `INC...` number as the native
+  tool identifier.
 
-    STEP 3 — REMEDIATE
-    Based on findings:
-    - Disk pressure → clean up files or expand disk
-    - High CPU → identify the process, restart service
-    - Memory → check for leaks, restart or resize VM
-
-    STEP 4 — DOCUMENT
-    Use servicenow-incident-mgmt skill to create and update a SNOW
-    ticket with the full investigation trail.
-
-    STEP 5 — VALIDATE
-    Confirm the metric that triggered the alert is back to normal.
-  handoffDescription: 'Handles VM and infrastructure alerts'
-  handoffs: []
-  tools:
-  - CreateServiceNowIncident
-  - UpdateServiceNowWorkNotes
+tools:
+  - azure-monitor
+  - azure-resource-graph
+  - log-analytics
+  - az-cli
+  - GetServiceNowIncident
+  - AcknowledgeServiceNowIncident
+  - PostServiceNowDiscussionEntry
   - ResolveServiceNowIncident
-  - LookupServiceNowIncident
-  mcpTools: []
-  allowParallelToolCalls: true
-  maxReflectionCount: 0
-  criticPromptPath: ''
-  criticOnHandoff: false
-  customReflectionNote: ''
-  commonPrompts: []
-  enableVanillaMode: false
-  enableSkills: true
-  addSystemSkills: true
+
+skills:
+  - servicenow-incident-mgmt
+
+triggers:
+  - type: incident
+    sources:
+      - ServiceNow
+    resourceTypes:
+      - Microsoft.Compute/virtualMachines
+
+metadata:
+  owner: Zava Power Infrastructure
+  environment: production
+  tags:
+    - virtual-machines
+    - infrastructure
+    - servicenow

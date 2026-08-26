@@ -2,6 +2,7 @@
 .azure/
 *.env
 .env.*
+!.env.example
 *.local
 *.secret
 

@@ -35,18 +35,16 @@ if ! command -v srectl &> /dev/null; then
     echo ""
     echo "  1. Select your agent (sre-powergrid)"
     echo ""
-    echo "  2. Builder → Tools → + Add tool → Python"
-    echo "     Upload each YAML from sre-config/tools/:"
-    echo "       - CreateServiceNowIncident"
-    echo "       - UpdateServiceNowWorkNotes"
-    echo "       - ResolveServiceNowIncident"
-    echo "       - LookupServiceNowIncident"
+    echo "  2. Builder → Tools → + Add tool"
+    echo "       - CheckWarranty (unrelated IT support helper)"
     echo ""
     echo "  3. Builder → Agents → + Create agent"
     echo "     Create from each YAML in sre-config/agents/:"
     echo "       - incident-handler"
-    echo "       - servicenow-handler"
+    echo "       - it-support-handler"
     echo "       - utility-ops-agent"
+    echo "       - vm-ops-agent"
+    echo "       - deployment-validator"
     echo ""
     echo "  4. Builder → Skills → + Create skill"
     echo "     Upload each SKILL.md from skills/:"
@@ -55,13 +53,20 @@ if ! command -v srectl &> /dev/null; then
     echo "       - grid-status-diagnosis"
     echo "       - notification-svc-diagnosis"
     echo "       - deployment-rollback"
+    echo "       - disk-space-cleanup"
+    echo "       - servicenow-incident-mgmt"
     echo ""
     echo "  5. Builder → Knowledge → + Upload document"
     echo "       - knowledge-base/powergrid-architecture.md"
     echo "       - knowledge-base/incident-report-template.md"
     echo ""
-    echo "  6. Builder → Incidents → Response plans → + Create"
-    echo "       Name: auto-investigate, Agent: incident-handler"
+    echo "  6. Incidents → Incident platforms → ServiceNow"
+    echo "       Connect https://dev442167.service-now.com and scope ingestion"
+    echo "       to the Zava Power SRE assignment group."
+    echo ""
+    echo "  7. Incidents → Response plans → + Create"
+    echo "       Source: ServiceNow, Name: auto-investigate,"
+    echo "       Agent: incident-handler"
     echo ""
     echo "Full details: docs/SRE-AGENT-CONFIG.md"
     exit 0
@@ -88,47 +93,46 @@ echo ""
 echo -e "${YELLOW}Initializing srectl...${NC}"
 srectl init --resource-url "$AGENT_URL"
 
-# ── Apply Tools (4 ServiceNow tools) ──────────────────────
+# ── Apply legitimate custom tool ──────────────────────────
 echo ""
 echo -e "${CYAN}── Applying Tools ──────────────────────────────${NC}"
-for tool in CreateServiceNowIncident UpdateServiceNowWorkNotes ResolveServiceNowIncident LookupServiceNowIncident; do
-    echo -n "  $tool... "
-    srectl apply --file "sre-config/tools/${tool}/${tool}.yaml" --quiet 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}"
-done
+echo -n "  CheckWarranty... "
+srectl apply-yaml --file "sre-config/tools/CheckWarranty/CheckWarranty.yaml"
+echo -e "${GREEN}✓${NC}"
 
-# ── Apply Agents (3 subagents) ─────────────────────────────
+# ── Apply Agents (5 subagents) ─────────────────────────────
 echo ""
 echo -e "${CYAN}── Applying Agents ─────────────────────────────${NC}"
-for agent in incident-handler servicenow-handler utility-ops-agent; do
+for agent in incident-handler it-support-handler utility-ops-agent vm-ops-agent deployment-validator; do
     echo -n "  $agent... "
-    srectl apply --file "sre-config/agents/${agent}.yaml" --quiet 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}"
+    srectl apply-yaml --file "sre-config/agents/${agent}.yaml"
+    echo -e "${GREEN}✓${NC}"
 done
 
-# ── Apply Skills (5 troubleshooting skills) ────────────────
+# ── Apply Skills (7 troubleshooting skills) ────────────────
 echo ""
 echo -e "${CYAN}── Applying Skills ─────────────────────────────${NC}"
-for skill in outage-api-diagnosis meter-api-diagnosis grid-status-diagnosis notification-svc-diagnosis deployment-rollback; do
+for skill in outage-api-diagnosis meter-api-diagnosis grid-status-diagnosis notification-svc-diagnosis deployment-rollback disk-space-cleanup servicenow-incident-mgmt; do
     echo -n "  $skill... "
-    srectl skill apply --name "$skill" --quiet 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}"
+    srectl skill apply --name "$skill"
+    echo -e "${GREEN}✓${NC}"
 done
 
-# ── Upload Knowledge Base (2 reference docs) ──────────────
+# ── Upload Knowledge Base ──────────────────────────────────
 echo ""
 echo -e "${CYAN}── Uploading Knowledge Base ────────────────────${NC}"
-for doc in powergrid-architecture.md incident-report-template.md; do
+for doc in knowledge-base/*.md; do
     echo -n "  $doc... "
-    srectl doc upload --file "knowledge-base/$doc" --quiet 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}"
+    srectl doc upload --file "$doc"
+    echo -e "${GREEN}✓${NC}"
 done
 
-# ── Create Response Plan ───────────────────────────────────
+# ── Native ServiceNow configuration ────────────────────────
 echo ""
-echo -e "${CYAN}── Creating Response Plan ──────────────────────${NC}"
-echo -n "  auto-investigate... "
-srectl incidenthandler create \
-    --id auto-investigate \
-    --name "Auto Investigate PowerGrid Alerts" \
-    --handling-agent incident-handler \
-    --quiet 2>/dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${YELLOW}(may already exist)${NC}"
+echo -e "${CYAN}── Native ServiceNow Configuration ─────────────${NC}"
+echo "  Configure the ServiceNow incident platform and ServiceNow-source"
+echo "  auto-investigate response plan in the SRE Agent portal."
+echo "  See docs/SERVICENOW-SETUP.md."
 
 # ── ADO Setup (if org provided) ────────────────────────────
 ADO_ORG="${1:-}"
@@ -160,15 +164,16 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  ✅ SRE Agent configured successfully!${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Applied: 4 tools, 3 agents, 5 skills, 2 knowledge docs, 1 response plan"
+echo "  Applied: 1 custom tool, 5 agents, 7 skills, 8 knowledge docs"
 echo ""
 echo -e "  ${YELLOW}Manual steps remaining:${NC}"
 echo "    1. ADO service connection: ADO → Project Settings → Service connections"
 echo "       (see docs/ADO-SETUP.md)"
 echo "    2. Connect ADO to SRE Agent: sre.azure.com → Connectors → Azure DevOps"
 echo "       (see docs/SRE-AGENT-SETUP.md)"
-echo "    3. ServiceNow (optional): developer.servicenow.com → Request Instance"
-echo "       (see docs/SERVICENOW-SETUP.md)"
+echo "    3. Connect native ServiceNow incident ingestion and the response plan"
+echo "       for https://dev442167.service-now.com"
+echo "       (required; see docs/SERVICENOW-SETUP.md)"
 echo ""
 echo "  Ready to demo:"
 echo "    python simulator/demo.py              # CLI simulator"

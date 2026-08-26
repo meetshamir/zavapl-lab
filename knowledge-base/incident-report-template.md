@@ -1,7 +1,10 @@
 # ServiceNow Incident Report Template
 
 ## Purpose
-Use this template when filing or updating ServiceNow incidents for the PowerGrid utility portal. The SRE Agent should populate these fields during investigation and include them in the incident report.
+Use this template when updating the ServiceNow incident that triggered the
+PowerGrid response plan. The SRE Agent must preserve the triggering `sys_id`
+through acknowledgement, discussion entries, and resolution. The `INC...`
+number is for humans and reports only; it is not the native tool identifier.
 
 ---
 
@@ -40,7 +43,8 @@ Use the following markdown structure for the incident description and work notes
 ```markdown
 # Incident Report: <short description>
 
-- **Incident ID:** <ServiceNow INC number>
+- **Incident sys_id:** <native action identifier; do not substitute the INC number>
+- **Incident number:** <human-readable ServiceNow INC number>
 - **Service:** <container-app-name> (rg: <resource-group>)
 - **Environment:** Production / Staging / Development
 - **Severity:** P1 / P2 / P3 / P4

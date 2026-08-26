@@ -1,58 +1,71 @@
-api_version: azuresre.ai/v2
-kind: ExtendedAgent
-metadata:
-  name: incident-handler
-spec:
-  instructions: |-
-    You are the PowerGrid incident handler for Zava Power Limited.
-    When triggered by an Azure Monitor alert or asked to investigate:
+name: incident-handler
+description: Primary incident response agent for Zava Power operations
+model: gpt-4o
+instructions: |
+  You are the primary incident response agent for Zava Power, an EV charging
+  infrastructure platform. You investigate and remediate production incidents.
 
-    PHASE 1 — DOCUMENT (ServiceNow)
-    1. Create a ServiceNow incident using CreateServiceNowIncident:
-       - short_description: Brief summary (e.g., "outage-api returning HTTP 500")
-       - urgency: 2 (High), impact: 2 (High) for customer-facing services
-    2. Use UpdateServiceNowWorkNotes: "Investigation started. Triggered by [alert name]."
+  ## Process
 
-    PHASE 2 — INVESTIGATE
-    3. Query ContainerAppConsoleLogs for errors in the affected service
-    4. Check App Insights for request failures, latency spikes, exception traces
-    5. Consult the relevant runbook in the knowledge base
-    6. Use UpdateServiceNowWorkNotes with each major finding
+  1. Read the triggering ServiceNow incident with GetServiceNowIncident, using the
+     `sys_id` supplied by native incident ingestion. The `INC...` number is display-only.
+  2. Acknowledge the same incident with AcknowledgeServiceNowIncident.
+  3. Gather context from logs, metrics, deployment history, and Azure resource state.
+  4. Post investigation updates to the same incident with
+     PostServiceNowDiscussionEntry after each major step.
+  5. Identify and remediate the root cause. Use az-cli only after validating the
+     intended change against current resource state.
+  6. Verify the remediation by re-querying metrics, logs, and service health.
+  7. Resolve the same incident with ResolveServiceNowIncident and concise resolution
+     notes. Never create or look up a second incident.
 
-    PHASE 3 — CORRELATE (ADO)
-    7. Use ADO release management tools to check recent deployments:
-       - DiscoverPipelines → find PowerGrid-Deploy pipeline
-       - GetPipelineRunHistory → check if a deployment happened near incident time
-       - GetPipelineRunVariables → check if failure_scenario was set
-       - CompareWithLastSuccessfulRun → identify code changes
-    8. Use UpdateServiceNowWorkNotes with deployment correlation findings
+  ServiceNow native ingestion is authoritative for incident state. Azure Monitor,
+  Application Insights, Log Analytics, and Azure resources are diagnostic evidence only.
+  Always preserve the triggering `sys_id` for native ServiceNow lifecycle tools.
 
-    PHASE 4 — REMEDIATE
-    9. Execute the fix (rollback revision, fix config, restart service)
-    10. Use UpdateServiceNowWorkNotes with remediation action taken
-    11. If root cause is in code, create a fix PR using CreateFixPullRequest
-
-    PHASE 5 — VALIDATE & CLOSE
-    12. Verify the service is healthy (check /health endpoint, App Insights)
-    13. Use UpdateServiceNowWorkNotes with validation results
-    14. Use ResolveServiceNowIncident with full resolution notes
-
-    Always reference powergrid-architecture.md for system topology.
-    Always document EVERY step in ServiceNow work notes for NERC CIP audit trail.
-  handoffDescription: ''
-  handoffs: []
-  tools:
-  - CreateServiceNowIncident
-  - UpdateServiceNowWorkNotes
+tools:
+  - GetServiceNowIncident
+  - PostServiceNowDiscussionEntry
+  - AcknowledgeServiceNowIncident
   - ResolveServiceNowIncident
-  - LookupServiceNowIncident
-  mcpTools: []
-  allowParallelToolCalls: true
-  maxReflectionCount: 0
-  criticPromptPath: ''
-  criticOnHandoff: false
-  customReflectionNote: ''
-  commonPrompts: []
-  enableVanillaMode: false
-  enableSkills: true
-  addSystemSkills: true
+
+  - azure-monitor
+  - azure-resource-graph
+  - log-analytics
+  - application-insights
+
+  - az-cli
+
+  - ado-builds
+  - ado-releases
+
+skills:
+  - diagnose-container-issues
+  - investigate-app-errors
+  - correlate-deployments
+  - servicenow-incident-mgmt
+
+triggers:
+  - type: incident
+    sources:
+      - ServiceNow
+    severities:
+      - critical
+      - high
+      - medium
+
+handoffs:
+  - target: deployment-validator
+    condition: "Issue appears related to recent deployment"
+  - target: vm-ops-agent
+    condition: "Issue involves virtual machine health or performance"
+  - target: utility-ops-agent
+    condition: "Issue involves grid capacity or utility operations"
+
+metadata:
+  owner: Zava Power SRE
+  environment: production
+  tags:
+    - incident-response
+    - auto-remediation
+    - servicenow

@@ -15,9 +15,9 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 
 | Scenario | What Happens |
 |:---------|:-------------|
-| **🔍 Autonomous Investigation** | Azure Monitor fires an alert → SRE Agent investigates logs, correlates metrics, references runbooks, and identifies root cause — all without human intervention |
+| **🔍 Autonomous Investigation** | A ServiceNow incident is assigned to Zava Power SRE → native ingestion starts the response plan → SRE Agent investigates Azure evidence and identifies root cause |
 | **🔧 Automated Remediation** | Agent executes the fix (restart container, rollback config, scale replicas) and validates recovery |
-| **📋 ServiceNow Integration** | Agent creates an incident ticket, updates it throughout investigation, and resolves it with root-cause documentation |
+| **📋 ServiceNow Integration** | ServiceNow owns the incident lifecycle; the agent acknowledges, updates, and resolves the triggering record with native tools |
 | **📊 Proactive Health Monitoring** | Scheduled health checks run every 30 minutes — agent detects degradation before alerts fire |
 
 ---
@@ -45,30 +45,20 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 │               │  Managed Grafana                    │                   │
 │               └──────────────┬──────────────────────┘                   │
 │                              │                                          │
-│                              ▼                                          │
-│               ┌──────────────────────────┐                              │
-│               │   Azure Monitor Alerts   │                              │
-│               │  • HTTP 5xx errors       │                              │
-│               │  • High response time    │                              │
-│               │  • Container restarts    │                              │
-│               └────────────┬─────────────┘                              │
-│                            │ auto-investigate                           │
-│                            ▼ response plan                              │
-│               ┌──────────────────────────┐      ┌────────────────────┐  │
+│                              ▲                                          │
+│                              │ diagnostic evidence                       │
+│               ┌──────────────┴───────────┐      ┌────────────────────┐  │
 │               │    Azure SRE Agent 🤖    │─────▶│  Knowledge Base    │  │
 │               │  • incident-handler      │      │  • Runbooks        │  │
-│               │  • servicenow-handler    │      │  • Architecture    │  │
-│               │  • utility-ops-agent     │      │  • Templates       │  │
-│               └─────┬──────────┬─────────┘      └────────────────────┘  │
-│                     │          │                                         │
-└─────────────────────│──────────│─────────────────────────────────────────┘
-                      │          │
-          ┌───────────┘          └───────────┐
-          ▼                                  ▼
-┌──────────────────┐              ┌──────────────────┐
-│   ServiceNow     │              │ Datadog/Dynatrace│
-│   (optional)     │              │   (optional)     │
-└──────────────────┘              └──────────────────┘
+│               │  • specialist agents     │      │  • Architecture    │  │
+│               │  • native SN tools       │      │  • Templates       │  │
+│               └──────────────▲───────────┘      └────────────────────┘  │
+└──────────────────────────────│──────────────────────────────────────────┘
+                               │ native ingestion + response plan
+                    ┌──────────┴──────────┐
+                    │ ServiceNow         │
+                    │ authoritative INC  │
+                    └─────────────────────┘
 ```
 
 ---
@@ -82,7 +72,7 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 | **Log Analytics Workspace** | Central log storage — KQL queries for diagnostics |
 | **Application Insights** | Request telemetry, error tracking, and performance monitoring |
 | **Managed Grafana** | Dashboards for real-time service observability |
-| **Azure Monitor Alerts** | 5xx errors, high latency, container restarts → auto-triggers agent |
+| **Azure Monitor Alerts** | Diagnostic signals for 5xx errors, latency, and restarts; not the authoritative incident source |
 | **Container Registry** | PowerGrid container images |
 | **Managed Identity** | Reader + Monitoring Reader + Log Analytics Reader + Container App Contributor RBAC |
 
@@ -90,12 +80,14 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 
 | Component | File | Purpose |
 |:----------|:-----|:--------|
-| **incident-handler** | `sre-config/agents/incident-handler.yaml` | Investigates incidents using logs, KQL, and runbooks |
-| **servicenow-handler** | `sre-config/agents/servicenow-handler.yaml` | Manages ServiceNow incident lifecycle |
+| **incident-handler** | `sre-config/agents/incident-handler.yaml` | Owns the native ServiceNow lifecycle and investigates with Azure evidence |
+| **it-support-handler** | `sre-config/agents/it-support-handler.yaml` | Handles user-impact, warranty, and communication tasks on the same incident |
+| **vm-ops-agent** | `sre-config/agents/vm-ops-agent.yaml` | Diagnoses VM and disk incidents without creating duplicates |
+| **deployment-validator** | `sre-config/agents/deployment-validator.yaml` | Correlates and rolls back deployments while updating the triggering incident |
 | **utility-ops-agent** | `sre-config/agents/utility-ops-agent.yaml` | Scheduled health checks and grid status reports |
-| **Response Plan** | `sre-config/response-plans/auto-investigate.yaml` | Routes Azure Monitor alerts to incident-handler |
+| **Response Plan** | `sre-config/response-plans/auto-investigate.yaml` | Routes native ServiceNow incidents to incident-handler |
 | **Health Check** | `sre-config/scheduled-tasks/health-check.yaml` | Runs utility-ops-agent every 30 minutes |
-| **ServiceNow MCP** | `sre-config/connectors/servicenow-mcp.yaml` | Optional ServiceNow connector template |
+| **ServiceNow guidance** | `sre-config/connectors/servicenow-mcp.yaml` | Native incident-platform setup notes; contains no credentials |
 | **Datadog MCP** | `sre-config/connectors/datadog-mcp.yaml` | Optional Datadog connector template |
 | **Dynatrace MCP** | `sre-config/connectors/dynatrace-mcp.yaml` | Optional Dynatrace connector template |
 | **Global Tools** | Built-in | Azure Monitor, Log Analytics, App Insights, DevOps |
@@ -110,8 +102,8 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 | 2 | **Memory Leak** | meter-api OOM kill | Detects OOM in container logs, scales replicas, recommends fix | IT Operations |
 | 3 | **Deploy Regression** | grid-status-api slow responses (>3s) | Correlates latency spike with deployment, identifies bad config | Developer |
 | 4 | **Container Crash Loop** | notification-svc CrashLoopBackOff | Finds missing env var, applies config fix | IT Operations |
-| 5 | **Alert-Driven Auto-Fix** | Same as #1 with response plan | Alert fires → agent investigates and remediates autonomously | ZeroOps |
-| 6 | **ServiceNow Lifecycle** | Any break + ServiceNow connector | Creates INC, updates with findings, resolves with RCA | ITSM |
+| 5 | **Incident-Driven Auto-Fix** | ServiceNow incident assigned to Zava Power SRE | Native response plan investigates and remediates autonomously | ZeroOps |
+| 6 | **ServiceNow Lifecycle** | Any break + native ServiceNow incident | Updates and resolves the triggering INC with RCA | ITSM |
 | 7 | **Source Code Analysis** | Any break + GitHub connected | Finds root cause in source code, creates GitHub issue | Developer |
 | 8 | **Combined Chaos** | All services break simultaneously | Agent triages by severity, handles in parallel | Stress Test |
 
@@ -140,7 +132,7 @@ Built for the Zava Power ZeroOps initiative. Deploy a realistic power-utility mi
 ### Optional
 
 - [GitHub account](https://github.com) — fork this repo for Scenario 7 (source code analysis)
-- [ServiceNow Developer Instance](https://developer.servicenow.com) — free, for Scenario 6
+- Access to `https://dev442167.service-now.com` with the prerequisites in [ServiceNow setup](docs/SERVICENOW-SETUP.md)
 
 ---
 
@@ -188,7 +180,7 @@ bash scripts/post-provision.sh
 
 Open [sre.azure.com](https://sre.azure.com) → **Full Setup** → verify:
 - **Azure resources**: resource group `rg-powergrid` visible
-- **Incidents**: Azure Monitor connected
+- **Incidents**: native ServiceNow platform connected and scoped to Zava Power SRE
 - **Knowledge sources**: runbook files indexed
 
 ---
@@ -263,25 +255,27 @@ current replica counts and resource utilization.
 
 ### Automated Investigation
 
-After breaking a service, the Azure Monitor alert will fire within **5-10 minutes**. If the response plan is configured:
+For a ServiceNow-backed simulator scenario, explicitly type `CREATE` to create
+the disposable incident. If the native platform and response plan are
+configured:
 
-1. Alert fires → response plan matches rule name
-2. incident-handler agent is invoked automatically
-3. Agent investigates, applies fix, validates recovery
-4. Check **Activities → Incidents** in the SRE Agent portal to see the full investigation log
+1. ServiceNow assigns the incident to Zava Power SRE
+2. Native ingestion starts `auto-investigate` with the incident `sys_id`
+3. `incident-handler` acknowledges and investigates that record
+4. The agent applies the fix, validates recovery, posts work notes, and resolves the same record
+5. Check **Activities → Incidents** in the SRE Agent portal to see the full investigation log
 
 ---
 
-## Optional Integrations
+## Integrations
 
 ### ServiceNow
 
-Connect SRE Agent to ServiceNow for automated incident ticket management.
-
-1. Create a free [ServiceNow Developer Instance](https://developer.servicenow.com)
-2. Copy `sre-config/connectors/servicenow-mcp.yaml` and fill in your instance URL and credentials
-3. Add the connector in **Builder → Connectors** in the SRE Agent portal
-4. The servicenow-handler agent will automatically create and manage incidents
+ServiceNow is the required authoritative incident source. Configure
+`https://dev442167.service-now.com`, least-privilege access, simulator OAuth
+client credentials, native incident ingestion, and the ServiceNow-source
+response plan by following [docs/SERVICENOW-SETUP.md](docs/SERVICENOW-SETUP.md).
+Never store credentials in `sre-config` files.
 
 ### Datadog
 
@@ -313,7 +307,7 @@ Features:
 - 🎯 **Scenario selection** — choose which service to break
 - 📊 **Live dashboards** — simulated metrics and log streams
 - 🔄 **Reset capability** — restore all services to healthy state
-- 🎭 **ServiceNow demo** — walk through the incident lifecycle
+- 🎭 **ServiceNow demo** — create a disposable source incident only after explicit confirmation, then observe native processing
 - ⚡ **Combined chaos** — break everything at once
 
 The simulator injects real failures into your deployed Container Apps and displays simulated telemetry for demonstration purposes.
@@ -359,10 +353,10 @@ To clean up only the SRE Agent configuration, visit [sre.azure.com](https://sre.
 |:------|:----|
 | `python` not found (Windows) | Disable Store aliases in Settings → Apps → App execution aliases, then reopen terminal |
 | `azd up` times out | Check Azure subscription quotas; try a different region with `azd env set AZURE_LOCATION westus2` |
-| Alert response plan not triggering | Wait 10-15 min for Azure Monitor evaluation; verify plan is linked in Builder → Response Plans |
+| ServiceNow response plan not triggering | Verify the incident is assigned to Zava Power SRE, wait for the native poller, and confirm the response plan source is ServiceNow |
 | SRE Agent can't query logs | Verify managed identity RBAC: Reader + Monitoring Reader + Log Analytics Reader on the resource group |
 | Container apps stuck in provisioning | Run `az containerapp list -g rg-powergrid -o table` to check status; retry `azd up` if needed |
-| ServiceNow connector fails | Verify instance URL includes `https://` prefix; check credentials are correct; ensure instance is awake (dev instances sleep) |
+| ServiceNow connection fails | Wake `dev442167`; verify native connector authorization, simulator OAuth configuration, assignment scope, and incident ACLs |
 | Grafana shows no data | It takes 5-10 min for Managed Grafana to ingest initial data; check Monitoring Reader role assignment |
 | `setup.sh` fails on Windows | Use Git Bash: `"C:\Program Files\Git\bin\bash.exe" scripts/setup.sh` — do not use PowerShell or CMD directly |
 

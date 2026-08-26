@@ -16,8 +16,10 @@ spec:
     5. Check Azure Monitor for any active or recently fired alerts
     6. Compile a Grid Status Report summarizing overall system health
 
-    If any service is degraded or unreachable, trigger the incident-handler agent
-    for further investigation.
+    If any service is degraded or unreachable, report the evidence and recommend
+    opening or assigning a ServiceNow incident to Zava Power SRE. Do not invoke
+    incident-handler directly or create an Azure Monitor-owned incident. The
+    native ServiceNow response plan starts incident-handler after ingestion.
 
     Report format:
       POWERGRID STATUS REPORT

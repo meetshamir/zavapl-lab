@@ -1,43 +1,69 @@
-# ─────────────────────────────────────────────────────────────
-# Response Plan: Auto-Investigate Azure Monitor Alerts
-# ─────────────────────────────────────────────────────────────
-# Routes PowerGrid Azure Monitor alerts to the incident-handler
-# agent for autonomous investigation and remediation.
-#
-# This response plan matches on the three alert rules deployed
-# by the lab's Bicep templates (see infra/modules/alerts.bicep).
-# ─────────────────────────────────────────────────────────────
-
 name: auto-investigate
-description: Automatically investigate PowerGrid alerts using the incident-handler agent
+description: Automatically investigate ServiceNow incidents assigned to Zava Power SRE
 
-# Trigger — match incoming Azure Monitor alerts by rule name
 trigger:
-  source: azure-monitor
-  alert_rules:
-    - "alert-powergrid-http-5xx"
-    - "alert-powergrid-high-latency"
-    - "alert-powergrid-container-restart"
+  source: ServiceNow
+  table: incident
+  conditions:
+    - active: true
+    - assignmentGroup: Zava Power SRE
 
-# Agent to invoke when an alert matches
 agent: incident-handler
 
-# Instructions appended to the agent's base instructions for this plan
 instructions: |
-  An Azure Monitor alert has fired. Investigate autonomously:
-  1. Parse the alert payload to identify the affected service and severity
-  2. Query ContainerAppConsoleLogs and App Insights for the time window around the alert
-  3. Correlate with recent deployments or configuration changes
-  4. Consult the relevant runbook from the knowledge base
-  5. If a known remediation exists, execute it immediately
-  6. Create a ServiceNow incident if the servicenow connector is available
-  7. Validate recovery and update the incident with findings
+  A ServiceNow incident has been ingested by the native incident platform. The trigger
+  provides the incident `sys_id`; keep it unchanged for all native lifecycle actions.
 
-  Severity mapping from Azure Monitor:
-    - Sev 0/1 → Critical: investigate immediately, escalate if no fix in 5 min
-    - Sev 2   → High: investigate immediately
-    - Sev 3   → Warning: investigate, may be transient
-    - Sev 4   → Informational: log for review
+  1. Read and acknowledge the triggering incident with GetServiceNowIncident and
+     AcknowledgeServiceNowIncident. Do not create or look up another incident.
+  2. Investigate using Application Insights, Azure resource health, deployment history,
+     logs, and metrics as diagnostic evidence.
+  3. Post investigation findings to the same incident with
+     PostServiceNowDiscussionEntry.
+  4. Remediate when safe and document the action on the same incident.
+  5. Verify metrics, service health, and smoke tests as appropriate.
+  6. Resolve the same incident with ResolveServiceNowIncident, including root cause,
+     actions, and verification evidence.
 
-# Run in autonomous mode — agent can execute remediations without approval
-mode: autonomous
+  ServiceNow is authoritative for state transitions. Use the display `INC...` number
+  only in human-readable messages, never as the native tool identifier.
+
+settings:
+  autoExecute: true
+  requireApproval:
+    - destructive_actions
+    - production_changes
+  timeout: 30m
+  maxRetries: 3
+
+tools:
+  - GetServiceNowIncident
+  - AcknowledgeServiceNowIncident
+  - PostServiceNowDiscussionEntry
+  - ResolveServiceNowIncident
+  - azure-monitor
+  - application-insights
+  - log-analytics
+  - azure-resource-graph
+  - az-cli
+
+notifications:
+  onStart:
+    - channel: teams
+      target: Zava Power SRE
+  onComplete:
+    - channel: teams
+      target: Zava Power SRE
+  onFailure:
+    - channel: teams
+      target: Zava Power SRE
+    - channel: email
+      target: sre-oncall@zavapower.com
+
+metadata:
+  owner: Zava Power SRE
+  version: "2.0"
+  tags:
+    - auto-remediation
+    - servicenow
+    - incident-response

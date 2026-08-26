@@ -18,6 +18,10 @@ param computePlatform string = 'aca'
 @description('Deploy Arc-enabled VM for hybrid scenario (optional)')
 param deployArcVm bool = false
 
+@secure()
+@description('Generated administrator password for the optional Arc VM; override from a secret store when deploying that scenario')
+param arcVmAdminPassword string = newGuid()
+
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
@@ -134,6 +138,7 @@ module arcVm 'modules/arc-vm.bicep' = if (deployArcVm) {
     workloadName: workloadName
     tags: tags
     logAnalyticsWorkspaceId: observability.outputs.logAnalyticsWorkspaceId
+    adminPassword: arcVmAdminPassword
   }
 }
 

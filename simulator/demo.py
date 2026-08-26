@@ -35,6 +35,7 @@ from rich.live import Live
 from rich.text import Text
 from rich import box
 import requests
+from servicenow import ServiceNowClient, ServiceNowConfig, ServiceNowError
 
 import msvcrt
 
@@ -53,6 +54,42 @@ PORTAL_URL = os.environ.get("POWERGRID_PORTAL_URL",
 
 console = Console()
 RECOVERY_THRESHOLD = 3   # consecutive healthy samples before declaring recovered
+
+
+def create_servicenow_incident(short_description, description, **fields):
+    """Create the authoritative ServiceNow incident for a selected scenario."""
+    console.print(Panel(
+        "[bold yellow]This creates a real test incident in the configured "
+        "ServiceNow instance.[/]\n"
+        "The native SRE Agent incident platform will ingest it and pass its "
+        "[bold]sys_id[/] to the response plan.",
+        title="[bold]ServiceNow incident source[/]",
+        border_style="yellow",
+        width=68,
+    ))
+    confirmation = console.input(
+        "  Type [bold]CREATE[/] to create the incident, or press Enter to cancel: "
+    ).strip()
+    if confirmation != "CREATE":
+        console.print("[yellow]  Incident creation cancelled.[/]")
+        return None
+
+    try:
+        config = ServiceNowConfig.from_environment()
+        incident = ServiceNowClient(config).create_incident(
+            short_description, description, **fields
+        )
+    except ServiceNowError as exc:
+        console.print(f"[red]  ServiceNow incident creation failed: {exc}[/]")
+        return None
+
+    console.print(
+        f"[green]  Created {incident.number} "
+        f"(sys_id: {incident.sys_id}).[/]\n"
+        "[cyan]  Native ServiceNow indexing polls about once per minute. "
+        "Watch sre.azure.com for the response-plan thread.[/]\n"
+    )
+    return incident
 
 # ── Keyboard ────────────────────────────────────────────────
 def check_key():
@@ -338,7 +375,7 @@ def monitor_health(url, path, service_name, agent_name,
                    healthy_fn=None, ok_label="HEALTHY", bad_label="UNHEALTHY",
                    alert_name=None, trigger_type="release"):
     """Live health monitor with alert + agent tracking.
-    
+
     alert_name: if set, polls Azure Monitor for this alert (e.g. "http-5xx")
     trigger_type: "release" (deployment scenarios) or "alert" (organic issues)
     """
@@ -347,7 +384,7 @@ def monitor_health(url, path, service_name, agent_name,
 
     sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
-    
+
     if trigger_type == "release":
         timeline.add(f"⚡ Release trigger fired → {agent_name} investigating", "yellow bold")
     else:
@@ -462,20 +499,28 @@ def scenario_crash():
         "But in production, some SCADA records return None for\n"
         "crew_status and cause fields.",
 
-        "1. We trigger the build pipeline with the buggy code\n"
-        "2. Build completes → Release deploys to production\n"
-        "3. Release trigger fires → deployment-validator agent\n"
-        "   PROACTIVELY checks service health\n"
-        "4. Agent finds /outages returning 500 (AttributeError)\n"
-        "5. Agent investigates → finds NoneType crash in SCADA code\n"
-        "6. Agent rolls back → creates fix PR → documents in SNOW")
-
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We trigger the build pipeline with the buggy code\n"
+        "3. Build completes → Release deploys to production\n"
+        "4. Native ServiceNow ingestion starts the response plan\n"
+        "5. Agent finds /outages returning 500 (AttributeError)\n"
+        "6. Agent rolls back → creates fix PR → updates the same incident")
+
     if not preflight_check(needs_ado=True, needs_services=[("outage-api", OUTAGE_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
+    incident = create_servicenow_incident(
+        "[Zava Power demo] outage-api returns HTTP 500 after deployment",
+        "Synthetic demo incident for an explicitly selected fault injection. "
+        "The simulator will deploy an outage-api defect that makes /outages return "
+        "HTTP 500. Investigate the deployment, restore service, and document "
+        "findings on this incident.",
+    )
+    if not incident:
+        return
     if not run_build_release("crash", "outage-api"):
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⚡ SERVICENOW INCIDENT CREATED — native response plan queued[/]\n")
     time.sleep(1)
 
     if monitor_health(OUTAGE_API_URL, "/outages", "outage-api",
@@ -483,13 +528,13 @@ def scenario_crash():
                       alert_name="http-5xx", trigger_type="release"):
         show_result("🎉", "SERVICE RESTORED!", [
             "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
+            f"- Investigated authoritative ServiceNow incident {incident.number}",
             "- Found AttributeError in _enrich_outage() line 116",
             "- Rolled back to previous revision",
             "- Created fix PR in ADO",
             "",
             "Check sre.azure.com for the full investigation thread.",
-            "Check dev268981.service-now.com for the SNOW ticket.",
+            "Check dev442167.service-now.com for the incident.",
         ])
 
 # ═══════════════════════════════════════════════════════════
@@ -504,20 +549,28 @@ def scenario_perf():
         "Unit tests passed (only 5 records). In production, the regions\n"
         "endpoint processes 10,000+ records per call.",
 
-        "1. We trigger the build pipeline with the slow code\n"
-        "2. Build completes → Release deploys to production\n"
-        "3. Release trigger fires → deployment-validator agent\n"
-        "   PROACTIVELY checks service health\n"
-        "4. Agent finds /regions taking >5s (was <100ms)\n"
-        "5. Agent investigates → finds O(n²) checksum loop\n"
-        "6. Agent rolls back → creates fix PR → documents in SNOW")
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We trigger the build pipeline with the slow code\n"
+        "3. Build completes → Release deploys to production\n"
+        "4. Native ServiceNow ingestion starts the response plan\n"
+        "5. Agent finds /regions taking >5s and the O(n²) loop\n"
+        "6. Agent rolls back → creates fix PR → updates the same incident")
 
     if not preflight_check(needs_ado=True, needs_services=[("grid-status-api", GRID_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
 
+    incident = create_servicenow_incident(
+        "[Zava Power demo] grid-status-api latency regression",
+        "Synthetic demo incident for an explicitly selected fault injection. "
+        "The simulator will deploy a grid-status-api regression that makes /regions "
+        "exceed five seconds. Investigate, restore normal latency, and document "
+        "findings on this incident.",
+    )
+    if not incident:
+        return
     if not run_build_release("perf", "grid-status-api"):
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⚡ SERVICENOW INCIDENT CREATED — native response plan queued[/]\n")
     time.sleep(1)
 
     if monitor_health(GRID_API_URL, "/regions", "grid-status-api",
@@ -527,7 +580,7 @@ def scenario_perf():
                       alert_name="high-latency", trigger_type="release"):
         show_result("🎉", "PERFORMANCE RESTORED!", [
             "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
+            f"- Investigated authoritative ServiceNow incident {incident.number}",
             "- Found O(n²) checksum loop in validate_telemetry()",
             "- Response time: 5200ms → 85ms after rollback",
             "- Rolled back to previous revision",
@@ -548,20 +601,29 @@ def scenario_config():
         "who accidentally set GATEWAY_PORT=9443 in staging but left\n"
         "production pointing to the old port 8443 — now closed.",
 
-        "1. We trigger the build pipeline with the wrong config\n"
-        "2. Build completes → Release deploys to production\n"
-        "3. Release trigger fires → deployment-validator agent\n"
-        "   PROACTIVELY checks service health\n"
-        "4. Agent finds /send endpoint timing out (connection refused)\n"
-        "5. Agent investigates → finds GATEWAY_PORT mismatch\n"
-        "6. Agent rolls back → creates fix PR → documents in SNOW")
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We trigger the build pipeline with the wrong config\n"
+        "3. Build completes → Release deploys to production\n"
+        "4. Native ServiceNow ingestion starts the response plan\n"
+        "5. Agent finds /send timing out and GATEWAY_PORT mismatch\n"
+        "6. Agent rolls back → creates fix PR → updates the same incident")
 
     if not preflight_check(needs_ado=True):
         console.input("[dim]  Press Enter...[/]"); return
 
+    incident = create_servicenow_incident(
+        "[Zava Power demo] notification-svc gateway timeout",
+        "Synthetic demo incident for an explicitly selected fault injection. "
+        "The simulator will deploy a production configuration change that makes "
+        "notification-svc /send time out. Investigate, restore service, and "
+        "document findings on this incident.",
+        category="network",
+    )
+    if not incident:
+        return
     if not run_build_release("config", "notification-svc"):
         return
-    console.print("[bold yellow]  ⚡ RELEASE TRIGGER FIRED — deployment-validator investigating[/]\n")
+    console.print("[bold yellow]  ⚡ SERVICENOW INCIDENT CREATED — native response plan queued[/]\n")
     time.sleep(1)
 
     if monitor_health(NOTIFY_URL, "/send", "notification-svc",
@@ -569,7 +631,7 @@ def scenario_config():
                       alert_name="http-5xx", trigger_type="release"):
         show_result("🎉", "SERVICE RESTORED!", [
             "SRE Agent (deployment-validator):",
-            "- Created SNOW ticket INC00XXXXX",
+            f"- Investigated authoritative ServiceNow incident {incident.number}",
             "- Found connection timeout to gateway:8443",
             "- Identified GATEWAY_PORT mismatch (8443 vs 9443)",
             "- Rolled back to previous revision",
@@ -590,15 +652,26 @@ def scenario_disk():
         "Combined with nightly SCADA backups that were never pruned,\n"
         "the C: drive is now at 90%+ capacity and climbing.",
 
-        "1. We inject disk pressure on the VM via az vm run-command\n"
-        "2. Azure Monitor fires a disk-pressure alert (< 15% free)\n"
-        "3. Alert trigger → vm-ops-agent picks up the alert\n"
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We inject disk pressure on the VM via az vm run-command\n"
+        "3. Native ingestion starts the response plan; Azure Monitor is evidence\n"
         "4. Agent runs commands on the VM and investigates\n"
         "5. Agent cleans old logs and backups\n"
-        "6. Agent documents remediation in SNOW")
+        "6. Agent documents remediation on the same incident")
 
     if not preflight_check(needs_vm=True):
         console.input("[dim]  Press Enter...[/]"); return
+
+    incident = create_servicenow_incident(
+        "[Zava Power demo] grid management VM disk pressure",
+        "Synthetic demo incident for an explicitly selected fault injection. "
+        "The simulator will raise the grid management VM OS disk above 90% "
+        "utilization. Use Azure Monitor and VM diagnostics as evidence, remediate "
+        "safely, and document findings on this incident.",
+        category="hardware",
+    )
+    if not incident:
+        return
 
     console.print("[bold cyan]  ▶ Simulating disk pressure on Windows VM...[/]")
     try:
@@ -631,12 +704,12 @@ def scenario_disk():
 
     # Phase 2: Wait for Azure Monitor alert to fire
     console.print("[bold yellow]  ⏳ Waiting for Azure Monitor disk alert to fire...[/]\n")
-    
+
     sim_start = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     timeline = EventTimeline()
     timeline.add("Disk pressure injected — OS disk at ~91%", "red")
     timeline.add("⏳ Waiting for alert-powergrid-disk-pressure to fire...", "yellow")
-    
+
     alert_fired = False
     agent_started = False
     checks = []
@@ -801,12 +874,13 @@ def scenario_disk():
 
     show_result("🎉", "DISK PRESSURE RESOLVED!", [
         "SRE Agent (vm-ops-agent):",
-        "- Detected disk at 94% via Azure Monitor alert",
+        f"- Investigated authoritative ServiceNow incident {incident.number}",
+        "- Confirmed disk at 94% using Azure Monitor evidence",
         "- SSHed into vm-grid-mgmt-01",
         "- Cleaned C:\\SCADA\\Logs (recovered 10GB)",
         "- Pruned old SCADA backups (recovered 8GB)",
         "- Fixed logrotate config for scada.log",
-        "- Created SNOW ticket with remediation details",
+        "- Added remediation details to the same ServiceNow incident",
         "",
         "Check sre.azure.com for the full investigation thread.",
     ])
@@ -822,15 +896,26 @@ def scenario_load():
         "There is NO bug — the code is correct. The infrastructure is\n"
         "simply overwhelmed by legitimate traffic at 50x normal volume.",
 
-        "1. We generate a burst of concurrent requests to grid-status-api\n"
-        "2. Response times climb as the service saturates\n"
-        "3. Azure Monitor fires high-latency alert → incident-handler\n"
-        "4. Agent investigates — finds NO code defect\n"
-        "5. Agent recommends horizontal scaling + CDN caching\n"
-        "6. Agent documents the capacity event in SNOW")
-
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We generate a burst of concurrent requests to grid-status-api\n"
+        "3. Response times climb as the service saturates\n"
+        "4. Native ServiceNow ingestion starts incident-handler\n"
+        "5. Agent investigates — finds NO code defect\n"
+        "6. Agent updates the incident with capacity recommendations")
+
     if not preflight_check(needs_services=[("grid-status-api", GRID_API_URL)]):
         console.input("[dim]  Press Enter...[/]"); return
+
+    incident = create_servicenow_incident(
+        "[Zava Power demo] grid-status-api load spike",
+        "Synthetic demo incident for an explicitly selected load injection. "
+        "The simulator will generate a severe grid-status-api latency spike during "
+        "a regional grid event. Determine whether this is a defect or organic load "
+        "and document recommendations on this incident.",
+        category="network",
+    )
+    if not incident:
+        return
 
     console.print("[bold cyan]  ▶ Generating load spike (10 concurrent workers)...[/]\n")
     stop_event = threading.Event()
@@ -873,7 +958,7 @@ def scenario_load():
                 if is_slow and not had_slow:
                     had_slow = True
                     timeline.add(f"⚠️ High latency detected: {ms:.0f}ms", "red")
-                
+
                 if is_slow:
                     consecutive_fast = 0
                 else:
@@ -929,7 +1014,8 @@ def scenario_load():
 
     show_result("📈", "LOAD SPIKE ANALYZED", [
         "SRE Agent (incident-handler):",
-        "- Detected high-latency alert on grid-status-api",
+        f"- Investigated authoritative ServiceNow incident {incident.number}",
+        "- Confirmed high latency using Azure Monitor evidence",
         "- Investigated recent deployments — none found",
         "- Analyzed code paths — no regressions detected",
         "- Correlated with news event: Sector 7 transformer failure",
@@ -955,15 +1041,25 @@ def scenario_build_failure():
         "The outage-api still uses 'from flask.ext.cors import CORS'\n"
         "instead of the modern 'from flask_cors import CORS'.",
 
-        "1. We trigger the build pipeline with the broken imports\n"
-        "2. Build FAILS — ImportError at collect time\n"
-        "3. Build failure trigger → incident-handler agent\n"
-        "4. Agent reads build logs from ADO pipeline\n"
-        "5. Agent identifies the flask.ext import error\n"
-        "6. Agent creates fix PR and notifies the developer")
-
+        "1. Simulator creates the authoritative ServiceNow incident\n"
+        "2. We trigger the build pipeline with the broken imports\n"
+        "3. Build FAILS — ImportError at collect time\n"
+        "4. Native ingestion starts incident-handler\n"
+        "5. Agent identifies the flask.ext import error in ADO logs\n"
+        "6. Agent updates the incident, creates a fix PR, and notifies the developer")
+
     if not preflight_check(needs_ado=True):
         console.input("[dim]  Press Enter...[/]"); return
+
+    incident = create_servicenow_incident(
+        "[Zava Power demo] PowerGrid-Build pipeline failure",
+        "Synthetic demo incident for an explicitly selected build failure. "
+        "The simulator will run PowerGrid-Build with a broken outage-api import. "
+        "Inspect the ADO logs, identify the root cause, and document remediation "
+        "on this incident.",
+    )
+    if not incident:
+        return
 
     console.print("[bold cyan]  ▶ Triggering PowerGrid-Build (will fail)...[/]")
     build_id = run_ado_pipeline("PowerGrid-Build", {
@@ -979,14 +1075,16 @@ def scenario_build_failure():
 
     if result == "failed":
         console.print("[red bold]  ✗ BUILD FAILED — as expected![/]\n")
-        console.print("[bold yellow]  ⚡ Build failure trigger fired → incident-handler reading logs[/]\n")
-        time.sleep(2)
     else:
         console.print(f"[yellow]  Build result: {result} (expected failure)[/]\n")
+        return
+
+    console.print("[bold yellow]  ⚡ SERVICENOW INCIDENT CREATED — native response plan queued[/]\n")
 
     show_result("🔨", "BUILD FAILURE HANDLED", [
         "SRE Agent (incident-handler):",
-        "- Detected build failure in PowerGrid-Build pipeline",
+        f"- Investigated authoritative ServiceNow incident {incident.number}",
+        "- Confirmed the PowerGrid-Build failure in ADO",
         "- Retrieved and analyzed build logs from ADO",
         "- Found: ImportError — flask.ext removed in Flask 3.0",
         "- Root cause: 'from flask.ext.cors import CORS'",
